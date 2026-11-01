@@ -1,0 +1,113 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, symlinkSync, existsSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { createHelper } from '../bin/serverhealth-helper.js';
+import { validateRequest, aptConfig, parseAptConfigDump, countAptUpgrades, onCalendarWeekly, onCalendarMonthly } from '../src/system-settings.js';
+
+test('istekler izin verilen değerler listesine göre doğrulanır', () => {
+  assert.ok(validateRequest({ type: 'settings', settings: { updates: 'all', rebootTime: '04:30' } }).request);
+  assert.ok(validateRequest({ type: 'action', action: 'reboot' }).request);
+  assert.deepEqual(validateRequest({ type: 'action', action: 'rm -rf /' }).errors, ['type']);
+  assert.deepEqual(validateRequest({ type: 'shell', cmd: 'id' }).errors, ['type']);
+  assert.deepEqual(validateRequest({ type: 'settings', settings: { rebootTime: '04:00; reboot' } }).errors, ['rebootTime']);
+  assert.deepEqual(validateRequest({ type: 'settings', settings: { evil: true } }).errors, ['evil']);
+  assert.deepEqual(validateRequest({ type: 'settings', settings: { scheduledReboot: { day: 'Sun; id', time: '25:00' } } }).errors, ['scheduledReboot.day', 'scheduledReboot.time']);
+  assert.deepEqual(validateRequest({ type: 'settings', settings: { smartTests: { longDay: 31 } } }).errors, ['smartTests.longDay']);
+});
+
+test('apt ayarı üretilir ve apt-config çıktısından geri okunur', () => {
+  const text = aptConfig({ updates: 'all', rebootAfterUpdate: true, rebootTime: '04:30' });
+  assert.match(text, /APT::Periodic::Unattended-Upgrade "1";/);
+  assert.match(text, /Automatic-Reboot "true";/);
+  assert.match(text, /Automatic-Reboot-Time "04:30";/);
+  assert.match(text, /-updates"; };/);
+  assert.match(aptConfig({ updates: 'off', rebootAfterUpdate: false, rebootTime: '02:00' }), /Unattended-Upgrade "0";/);
+
+  const dump = [
+    'APT::Periodic::Update-Package-Lists "1";',
+    'APT::Periodic::Unattended-Upgrade "1";',
+    'Unattended-Upgrade::Allowed-Origins "";',
+    'Unattended-Upgrade::Allowed-Origins:: "${distro_id}:${distro_codename}-security";',
+    'Unattended-Upgrade::Automatic-Reboot "false";',
+  ].join('\n');
+  assert.deepEqual(parseAptConfigDump(dump), { updates: 'security', rebootAfterUpdate: false, rebootTime: '02:00' });
+  assert.equal(parseAptConfigDump(`${dump}\nUnattended-Upgrade::Allowed-Origins:: "\${distro_id}:\${distro_codename}-updates";`).updates, 'all');
+  assert.equal(parseAptConfigDump('APT::Periodic::Unattended-Upgrade "0";').updates, 'off');
+});
+
+test('bekleyen güncellemeler ve zamanlayıcı ifadeleri', () => {
+  const sim = [
+    'Inst libssl3 [3.0.2-0ubuntu1.1] (3.0.2-0ubuntu1.2 Ubuntu:22.04/jammy-security [amd64])',
+    'Inst curl [7.81.0-1] (7.81.0-1ubuntu1.4 Ubuntu:22.04/jammy-updates [amd64])',
+    'Conf libssl3 (3.0.2-0ubuntu1.2 Ubuntu:22.04/jammy-security [amd64])',
+  ].join('\n');
+  assert.deepEqual(countAptUpgrades(sim), { pending: 2, security: 1 });
+  assert.equal(onCalendarWeekly('sun', '04:00'), 'Sun *-*-* 04:00:00');
+  assert.equal(onCalendarWeekly('daily', '23:15'), '*-*-* 23:15:00');
+  assert.equal(onCalendarMonthly(1, '03:00'), '*-*-01 03:00:00');
+});
+
+test('yardımcı: kuyruğu işler, dosyaları yazar, zararlı istekleri reddeder', async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'serverhealth-helper-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const queue = path.join(root, 'var/lib/serverhealth-panel/queue');
+  mkdirSync(queue, { recursive: true });
+  const put = (name, obj) => writeFileSync(path.join(queue, name), JSON.stringify(obj));
+
+  put('1.json', {
+    type: 'settings',
+    settings: { updates: 'all', rebootAfterUpdate: true, rebootTime: '04:30', scheduledReboot: { enabled: true, day: 'sun', time: '05:00' }, smartTests: { enabled: true, shortDay: 'sat', longDay: 2, time: '03:00' } },
+  });
+  put('2.json', { type: 'settings', settings: { rebootTime: '$(reboot)' } });
+  put('3.json', { type: 'action', action: 'refresh' });
+  writeFileSync(path.join(queue, '4.json'), 'x'.repeat(20000)); // çok büyük
+  writeFileSync(path.join(root, 'secret.txt'), 'GIZLI-ICERIK');
+  symlinkSync(path.join(root, 'secret.txt'), path.join(queue, '5.json')); // başka bir dosyaya bağlantı
+
+  const helper = createHelper({
+    root,
+    dryRun: true,
+    nodeBin: '/usr/bin/node',
+    appDir: '/opt/serverhealth',
+    now: () => 1700000000000,
+    platformOverride: { packageManager: 'apt', systemctl: '/usr/bin/systemctl', autoUpdates: true, updateNow: true, smartTests: true, unattendedInstalled: true },
+  });
+  await helper.processQueue();
+
+  assert.deepEqual(readdirSync(queue), []); // kuyruk boşaltılır
+  assert.equal(readFileSync(path.join(root, 'secret.txt'), 'utf8'), 'GIZLI-ICERIK'); // bağlantının hedefi silinmez
+
+  const apt = readFileSync(path.join(root, 'etc/apt/apt.conf.d/52serverhealth'), 'utf8');
+  assert.match(apt, /Automatic-Reboot-Time "04:30";/);
+  assert.doesNotMatch(apt, /reboot\)/);
+
+  const units = path.join(root, 'etc/systemd/system');
+  assert.match(readFileSync(path.join(units, 'serverhealth-reboot.timer'), 'utf8'), /OnCalendar=Sun \*-\*-\* 05:00:00\nPersistent=false/);
+  assert.match(readFileSync(path.join(units, 'serverhealth-reboot.service'), 'utf8'), /ExecStart=\/usr\/bin\/systemctl reboot/);
+  assert.match(readFileSync(path.join(units, 'serverhealth-smarttest-long.timer'), 'utf8'), /OnCalendar=\*-\*-02 03:00:00/);
+  assert.match(readFileSync(path.join(units, 'serverhealth-smarttest-short.service'), 'utf8'), /serverhealth-helper\.js --smart-test short/);
+
+  const status = JSON.parse(readFileSync(path.join(root, 'var/lib/serverhealth/system.json'), 'utf8'));
+  assert.equal(status.settings.updates, 'all');
+  assert.equal(status.settings.rebootAfterUpdate, true);
+  assert.deepEqual(status.settings.scheduledReboot, { enabled: true, day: 'sun', time: '05:00' });
+  assert.equal(status.settings.smartTests.shortDay, 'sat');
+
+  const history = readFileSync(path.join(root, 'var/lib/serverhealth/actions.jsonl'), 'utf8');
+  assert.equal((history.match(/"rejected"/g) ?? []).length, 3);
+  assert.doesNotMatch(history, /GIZLI/); // reddedilen dosyanın içeriği hiçbir yere yazılmaz
+  assert.doesNotMatch(JSON.stringify(status), /GIZLI/);
+
+  // Çalıştırılan komutlar sabit; istekten gelen serbest metin içermez.
+  assert.ok(helper.commands.includes('/usr/bin/systemctl enable --now serverhealth-reboot.timer'));
+  assert.ok(helper.commands.includes('apt-get update'));
+  assert.ok(helper.commands.every((c) => !c.includes('$(')));
+
+  // Planlı yeniden başlatma kapatılınca zamanlayıcı kaldırılır.
+  put('6.json', { type: 'settings', settings: { scheduledReboot: { enabled: false } } });
+  await helper.processQueue();
+  assert.equal(existsSync(path.join(units, 'serverhealth-reboot.timer')), false);
+  assert.ok(helper.commands.includes('/usr/bin/systemctl disable --now serverhealth-reboot.timer'));
+});

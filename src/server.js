@@ -1,0 +1,375 @@
+#!/usr/bin/env node
+import http from 'node:http';
+import https from 'node:https';
+import { readFileSync } from 'node:fs';
+import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { loadConfig, resolveConfigPath } from './config.js';
+import { createAuth, hashPassword } from './auth.js';
+import { createSettingsStore, effectiveConfig, publicSettings, validatePanelSettings } from './settings.js';
+import { validateRequest } from './system-settings.js';
+import { setLanguage } from './i18n.js';
+import { createSessions } from './sessions.js';
+import { createSampler } from './sampler.js';
+
+const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
+
+// Sürüm ve proje bilgisi package.json'dan gelir; kurulum dosyayı uygulama klasörüne kopyalar.
+const ABOUT = readAbout();
+function readAbout() {
+  try {
+    const pkg = JSON.parse(readFileSync(path.join(PUBLIC_DIR, '..', 'package.json'), 'utf8'));
+    return { version: pkg.version ?? null, author: pkg.author ?? null, homepage: pkg.homepage ?? null, license: pkg.license ?? null };
+  } catch {
+    return { version: null, author: null, homepage: null, license: null };
+  }
+}
+const TEXT = 'text/plain; charset=utf-8';
+const JSON_TYPE = 'application/json; charset=utf-8';
+const MAX_BODY = 4096;
+
+// Yalnızca bu dosyalar sunulur; dosya yolu istekten türetilmez.
+// public: true olanlar oturum açmadan da yüklenebilir (giriş sayfası için).
+const ASSETS = [
+  { route: '/', file: 'index.html', type: 'text/html; charset=utf-8' },
+  { route: '/app.js', file: 'app.js', type: 'text/javascript; charset=utf-8' },
+  { route: '/login', file: 'login.html', type: 'text/html; charset=utf-8', public: true },
+  { route: '/login.js', file: 'login.js', type: 'text/javascript; charset=utf-8', public: true },
+  { route: '/i18n.js', file: 'i18n.js', type: 'text/javascript; charset=utf-8', public: true },
+  { route: '/style.css', file: 'style.css', type: 'text/css; charset=utf-8', public: true },
+  { route: '/favicon.svg', file: 'favicon.svg', type: 'image/svg+xml', public: true },
+];
+
+const SECURITY_HEADERS = {
+  'Content-Security-Policy':
+    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; " +
+    "base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'no-referrer',
+  'Cache-Control': 'no-store',
+};
+
+const isLoopback = (addr) => addr === '::1' || addr.startsWith('127.') || addr.startsWith('::ffff:127.');
+
+function loadAssets() {
+  return new Map(ASSETS.map((a) => [a.route, { ...a, body: readFileSync(path.join(PUBLIC_DIR, a.file)) }]));
+}
+
+function send(req, res, status, type, body, headers = {}) {
+  const buf = Buffer.isBuffer(body) ? body : Buffer.from(body);
+  res.writeHead(status, { ...SECURITY_HEADERS, 'Content-Type': type, 'Content-Length': buf.length, ...headers });
+  res.end(req.method === 'HEAD' ? undefined : buf);
+}
+
+const sendJson = (req, res, status, data, headers) => send(req, res, status, JSON_TYPE, JSON.stringify(data), headers);
+const redirect = (req, res, location) => send(req, res, 302, TEXT, '', { Location: location });
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > MAX_BODY) {
+        reject(Object.assign(new Error('İstek gövdesi çok büyük'), { status: 413 }));
+        req.destroy();
+      } else {
+        chunks.push(chunk);
+      }
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
+
+// Başka bir sitenin, kullanıcının tarayıcısı üzerinden giriş/çıkış isteği göndermesini engeller.
+function sameOrigin(req) {
+  const origin = req.headers.origin;
+  if (typeof origin !== 'string') return false;
+  try {
+    return new URL(origin).host === req.headers.host;
+  } catch {
+    return false;
+  }
+}
+
+// Örnekleyiciyi etkileyen ayarlar değişince yeniden kurulur.
+const SAMPLER_KEYS = ['intervalSeconds', 'historyMinutes', 'services', 'disks', 'network'];
+
+function listServiceUnits() {
+  return new Promise((resolve, reject) => {
+    execFile('systemctl', ['list-unit-files', '--type=service', '--no-legend', '--no-pager'], { timeout: 5000, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, LC_ALL: 'C' } }, (err, stdout) => {
+      if (err) return reject(err);
+      const units = stdout
+        .split('\n')
+        .map((l) => l.trim().split(/\s+/))
+        .filter(([unit, state]) => unit?.endsWith('.service') && !unit.includes('@') && state && !['alias', 'static', 'indirect', 'transient', 'generated'].includes(state))
+        .map(([unit, state]) => ({ name: unit.slice(0, -'.service'.length), state }));
+      resolve(units.sort((a, b) => a.name.localeCompare(b.name)));
+    });
+  });
+}
+
+function main() {
+  const configPath = resolveConfigPath();
+  let config;
+  try {
+    config = loadConfig(configPath);
+  } catch (err) {
+    console.error(err.message);
+    process.exit(1);
+  }
+  if (process.platform !== 'linux') console.warn('Uyarı: bu uygulama Linux için yazıldı; çoğu veri bu sistemde toplanamaz.');
+
+  // systemd StateDirectory= bu değişkeni verir; geliştirme ortamında proje içindeki "state" kullanılır.
+  const stateDir = process.env.STATE_DIRECTORY?.split(':')[0] ?? config.stateDirectory ?? path.join(path.dirname(PUBLIC_DIR), 'state');
+  const queueDir = path.join(stateDir, 'queue');
+  const settingsStore = createSettingsStore(stateDir);
+  let effective = effectiveConfig(config, settingsStore.get());
+  setLanguage(effective.language);
+
+  let auth = createAuth(effective.auth);
+  const sessions = createSessions();
+  let sampler = createSampler(effective);
+  const assets = loadAssets();
+
+  async function applySettings(previous) {
+    effective = effectiveConfig(config, settingsStore.get());
+    setLanguage(effective.language);
+    if (SAMPLER_KEYS.some((k) => JSON.stringify(previous[k]) !== JSON.stringify(effective[k]))) {
+      sampler.stop();
+      sampler = createSampler(effective);
+      sampler.start();
+    }
+  }
+
+  async function readSystemStatus() {
+    try {
+      return { available: true, ...JSON.parse(await readFile(config.system.statusFile, 'utf8')) };
+    } catch {
+      return { available: false };
+    }
+  }
+
+  // İstek dosyası önce geçici adla yazılıp taşınır; yardımcı yarım dosya görmez.
+  // Yardımcı adları sıralayarak işler; aynı milisaniyedeki istekler sayaçla sırasını korur.
+  let enqueued = 0;
+  async function enqueue(request) {
+    await mkdir(queueDir, { recursive: true });
+    const name = `${Date.now()}-${String(++enqueued).padStart(8, '0')}-${randomUUID()}.json`;
+    const tmp = path.join(stateDir, `.${name}.tmp`);
+    await writeFile(tmp, JSON.stringify({ ...request, requestedAt: Date.now() }), { mode: 0o640 });
+    await rename(tmp, path.join(queueDir, name));
+  }
+
+  async function readJsonBody(req, res) {
+    if (!sameOrigin(req)) {
+      sendJson(req, res, 403, { code: 'origin' });
+      return null;
+    }
+    if (!String(req.headers['content-type']).startsWith('application/json')) {
+      sendJson(req, res, 415, { code: 'content_type' });
+      return null;
+    }
+    try {
+      return JSON.parse(await readBody(req)) ?? {};
+    } catch (err) {
+      sendJson(req, res, err.status ?? 400, { code: 'bad_request' });
+      return null;
+    }
+  }
+
+  function clientIp(req) {
+    const remote = req.socket.remoteAddress ?? '';
+    if (config.trustProxy && isLoopback(remote)) {
+      const real = req.headers['x-real-ip'];
+      if (typeof real === 'string' && real.trim()) return real.trim();
+      const forwarded = req.headers['x-forwarded-for'];
+      const last = typeof forwarded === 'string' ? forwarded.split(',').map((s) => s.trim()).filter(Boolean).pop() : null;
+      if (last) return last;
+    }
+    return remote;
+  }
+
+  const isSecure = (req) =>
+    Boolean(config.tls.cert) ||
+    (config.trustProxy && isLoopback(req.socket.remoteAddress ?? '') && req.headers['x-forwarded-proto'] === 'https');
+
+  async function handleLogin(req, res) {
+    const body = await readJsonBody(req, res);
+    if (!body) return;
+    const { username = '', password = '', remember = false } = body;
+    const result = await auth.login(username, password, clientIp(req));
+    if (result.status === 429) {
+      return sendJson(req, res, 429, { code: 'locked', retryAfter: result.retryAfter }, { 'Retry-After': String(result.retryAfter) });
+    }
+    if (!result.ok) return sendJson(req, res, 401, { code: 'bad_credentials', attemptsLeft: result.attemptsLeft });
+    const cookie = sessions.create(auth.username, { remember: remember === true, secure: isSecure(req) });
+    return sendJson(req, res, 200, { ok: true }, { 'Set-Cookie': cookie });
+  }
+
+  async function handle(req, res) {
+    const { pathname } = new URL(req.url, 'http://localhost');
+
+    if (req.method === 'POST') {
+      if (pathname === '/login') return handleLogin(req, res);
+      if (pathname === '/logout') {
+        if (!sameOrigin(req)) return sendJson(req, res, 403, { code: 'origin' });
+        return sendJson(req, res, 200, { ok: true }, { 'Set-Cookie': sessions.destroy(req.headers.cookie, { secure: isSecure(req) }) });
+      }
+      // Ayar değiştiren istekler yalnızca tarayıcı oturumuyla yapılabilir (Basic Auth ile değil).
+      if (!sessions.get(req.headers.cookie)) return sendJson(req, res, 401, { code: 'no_session' });
+      if (pathname === '/api/settings') return handleSettings(req, res);
+      if (pathname === '/api/password') return handlePassword(req, res);
+      if (pathname === '/api/system') return handleSystem(req, res);
+      if (pathname === '/api/actions') return handleAction(req, res);
+      return send(req, res, 405, TEXT, 'Method not allowed\n', { Allow: 'GET, HEAD' });
+    }
+    if (req.method !== 'GET' && req.method !== 'HEAD') return send(req, res, 405, TEXT, 'İzin verilmeyen yöntem\n', { Allow: 'GET, HEAD, POST' });
+
+    if (pathname === '/healthz') return send(req, res, 200, TEXT, 'ok\n');
+    if (pathname === '/api/lang') return sendJson(req, res, 200, { language: effective.language });
+
+    const session = sessions.get(req.headers.cookie);
+    const asset = assets.get(pathname);
+    if (pathname === '/login' && session) return redirect(req, res, '/');
+    if (asset?.public) return sendAsset(req, res, asset);
+
+    let user = session?.user;
+    if (!user && req.headers.authorization) {
+      const result = await auth.check(req.headers.authorization, clientIp(req));
+      if (result.status === 429) {
+        return sendJson(req, res, 429, { code: 'locked', retryAfter: result.retryAfter }, { 'Retry-After': String(result.retryAfter) });
+      }
+      if (result.ok) user = auth.username;
+    }
+    if (!user) {
+      // Sayfa istekleri giriş ekranına yönlenir; API istemcileri 401 alır.
+      // WWW-Authenticate gönderilmez, böylece tarayıcı kendi şifre penceresini açmaz.
+      if (!pathname.startsWith('/api/')) return redirect(req, res, '/login');
+      return sendJson(req, res, 401, { code: 'no_session' });
+    }
+
+    if (pathname === '/api/stats') {
+      return sendJson(req, res, 200, { user, settings: { language: effective.language, thresholds: effective.thresholds }, ...sampler.current() });
+    }
+    if (pathname === '/api/settings') {
+      return sendJson(req, res, 200, { user, panel: publicSettings(effective), system: await readSystemStatus(), about: ABOUT });
+    }
+    if (pathname === '/api/services/available') {
+      try {
+        return sendJson(req, res, 200, { units: await listServiceUnits() });
+      } catch {
+        return sendJson(req, res, 500, { code: 'systemctl' });
+      }
+    }
+    if (asset) return sendAsset(req, res, asset);
+    return send(req, res, 404, TEXT, 'Not found\n');
+  }
+
+  function sendAsset(req, res, asset) {
+    const body = asset.type.startsWith('text/html') ? Buffer.from(asset.body.toString('utf8').replace('<html lang="tr">', `<html lang="${effective.language}">`)) : asset.body;
+    return send(req, res, 200, asset.type, body);
+  }
+
+  async function handleSettings(req, res) {
+    const body = await readJsonBody(req, res);
+    if (!body) return;
+    const { errors, value } = validatePanelSettings(body);
+    if (errors.length) return sendJson(req, res, 400, { code: 'invalid', fields: errors });
+    const previous = effective;
+    await settingsStore.update(value);
+    await applySettings(previous);
+    return sendJson(req, res, 200, { panel: publicSettings(effective) });
+  }
+
+  async function handlePassword(req, res) {
+    const body = await readJsonBody(req, res);
+    if (!body) return;
+    const { current = '', next = '' } = body;
+    if (typeof next !== 'string' || next.length < 8 || next.length > 200) return sendJson(req, res, 400, { code: 'weak_password' });
+    // Mevcut şifre giriş ekranıyla aynı kilitleme kurallarıyla doğrulanır.
+    const result = await auth.login(auth.username, String(current), clientIp(req));
+    if (result.status === 429) return sendJson(req, res, 429, { code: 'locked', retryAfter: result.retryAfter });
+    if (!result.ok) return sendJson(req, res, 401, { code: 'bad_password', attemptsLeft: result.attemptsLeft });
+    const previous = effective;
+    await settingsStore.setPasswordHash(await hashPassword(next));
+    await applySettings(previous);
+    auth = createAuth(effective.auth);
+    sessions.destroyOthers(req.headers.cookie);
+    console.log('Panel şifresi arayüzden değiştirildi; diğer oturumlar kapatıldı.');
+    return sendJson(req, res, 200, { ok: true });
+  }
+
+  async function handleSystem(req, res) {
+    const body = await readJsonBody(req, res);
+    if (!body) return;
+    const { errors, request } = validateRequest({ type: 'settings', settings: body });
+    if (errors) return sendJson(req, res, 400, { code: 'invalid', fields: errors });
+    await enqueue(request);
+    return sendJson(req, res, 202, { queued: true });
+  }
+
+  async function handleAction(req, res) {
+    const body = await readJsonBody(req, res);
+    if (!body) return;
+    const { errors, request } = validateRequest({ type: 'action', action: body.action });
+    if (errors) return sendJson(req, res, 400, { code: 'invalid' });
+    await enqueue(request);
+    console.log(`Arayüzden işlem istendi: ${request.action} (${clientIp(req)})`);
+    return sendJson(req, res, 202, { queued: true });
+  }
+
+  const handler = (req, res) => {
+    handle(req, res).catch((err) => {
+      console.error('İstek işlenemedi:', err);
+      if (!res.headersSent) send(req, res, 500, TEXT, 'Sunucu hatası\n');
+      else res.destroy();
+    });
+  };
+
+  let server;
+  if (config.tls.cert) {
+    try {
+      server = https.createServer({ cert: readFileSync(config.tls.cert), key: readFileSync(config.tls.key) }, handler);
+    } catch (err) {
+      console.error(`TLS sertifikası okunamadı: ${err.message}`);
+      process.exit(1);
+    }
+  } else {
+    server = http.createServer(handler);
+  }
+  server.headersTimeout = 10_000;
+  server.requestTimeout = 15_000;
+
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') console.error(`Port ${config.port} başka bir uygulama tarafından kullanılıyor.`);
+    else if (err.code === 'EACCES') console.error(`Port ${config.port} için yetki yok (1024 altındaki portlar ek yetki ister).`);
+    else console.error(err.message);
+    process.exit(1);
+  });
+
+  server.listen(config.port, config.host, () => {
+    const scheme = config.tls.cert ? 'https' : 'http';
+    console.log(`Sunucu Durumu paneli ${scheme}://${config.host}:${config.port}/ adresinde çalışıyor (yapılandırma: ${configPath})`);
+    if (!config.tls.cert && !isLoopback(config.host)) {
+      console.warn('Uyarı: TLS kapalı, şifre ağda düz metin olarak gider. HTTPS açın ya da host: "127.0.0.1" ile nginx veya SSH tüneli arkasına alın.');
+    }
+  });
+  sampler.start();
+
+  const shutdown = () => {
+    sampler.stop();
+    server.close(() => process.exit(0));
+    server.closeAllConnections?.();
+    setTimeout(() => process.exit(0), 3000).unref();
+  };
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
+}
+
+main();

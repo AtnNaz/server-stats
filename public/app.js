@@ -1,0 +1,2090 @@
+'use strict';
+
+const $ = (id) => document.getElementById(id);
+const { t, locale } = window.I18N;
+
+// ---------- Biçimlendirme ----------
+
+const pctFormat = new Intl.NumberFormat(locale, { style: 'percent', maximumFractionDigits: 1 });
+const num0 = new Intl.NumberFormat(locale, { maximumFractionDigits: 0 });
+const num1 = new Intl.NumberFormat(locale, { maximumFractionDigits: 1 });
+const num2 = new Intl.NumberFormat(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const timeFormat = new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+const fmtPct = (v) => (v == null ? '—' : pctFormat.format(v / 100));
+const pct0Format = new Intl.NumberFormat(locale, { style: 'percent', maximumFractionDigits: 0 });
+const pctAxis = (v) => pct0Format.format(v / 100);
+
+function fmtBytes(bytes) {
+  if (bytes == null) return '—';
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
+  let i = 0;
+  // 1000 eşiği, 1023,9 MiB'ın "1.024 MiB" yerine "1 GiB" yazılmasını sağlar.
+  while (bytes >= 1000 && i < units.length - 1) {
+    bytes /= 1024;
+    i++;
+  }
+  return `${(i === 0 ? num0 : num1).format(bytes)} ${units[i]}`;
+}
+
+function fmtRate(bytesPerSec) {
+  if (bytesPerSec == null) return '—';
+  const units = ['B', 'KB', 'MB', 'GB'].map((unit) => t('unit.perSecond', { unit }));
+  let i = 0;
+  while (bytesPerSec >= 1000 && i < units.length - 1) {
+    bytesPerSec /= 1000;
+    i++;
+  }
+  return `${(i === 0 ? num0 : num1).format(bytesPerSec)} ${units[i]}`;
+}
+
+function fmtDuration(seconds) {
+  if (seconds == null) return '—';
+  const s = Math.max(0, Math.floor(seconds));
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d) return t('dur.dh', { d, h });
+  if (h) return t('dur.hm', { h, m });
+  if (m) return t('dur.m', { m });
+  return t('dur.s', { s });
+}
+
+// Uyarı eşikleri; sunucu her yanıtta Ayarlar'daki güncel değerleri gönderir.
+let TH = { disk: [85, 95], memory: [85, 95], cpu: [80, 95], temperature: [80, 90] };
+
+const level = (p, warn = 85, crit = 95) => (p == null ? '' : p >= crit ? 'crit' : p >= warn ? 'warn' : '');
+
+const WELL_KNOWN_PORTS = {
+  21: 'ftp', 22: 'ssh', 25: 'smtp', 53: 'dns', 67: 'dhcp', 80: 'http', 110: 'pop3', 111: 'rpcbind',
+  123: 'ntp', 143: 'imap', 161: 'snmp', 323: 'chrony', 389: 'ldap', 443: 'https', 445: 'smb', 465: 'smtps',
+  587: 'submission', 631: 'ipp', 993: 'imaps', 995: 'pop3s', 1433: 'mssql', 1521: 'oracle',
+  2049: 'nfs', 2375: 'docker', 2376: 'docker-tls', 3306: 'mysql', 3389: 'rdp', 5353: 'mdns',
+  5432: 'postgresql', 5672: 'amqp', 6379: 'redis', 8080: 'http-alt', 8443: 'https-alt',
+  9090: 'prometheus', 9100: 'node-exporter', 9200: 'elasticsearch', 11211: 'memcached',
+  11434: 'ollama', 27017: 'mongodb', 41641: 'tailscale',
+};
+
+// ---------- DOM yardımcıları ----------
+
+// Tüm metinler textContent ile eklenir; süreç komutları veya konteyner adları HTML olarak yorumlanmaz.
+function h(tag, props, ...children) {
+  const el = document.createElement(tag);
+  for (const [key, value] of Object.entries(props ?? {})) {
+    if (value == null || value === false) continue;
+    if (key === 'class') el.className = value;
+    else el.setAttribute(key, value === true ? '' : value);
+  }
+  for (const child of children.flat(Infinity)) {
+    if (child == null || child === false) continue;
+    el.append(child instanceof Node ? child : String(child));
+  }
+  return el;
+}
+
+// Yerleşik replaceChildren null değerini "null" metni olarak ekler; bu yardımcı boş değerleri atlar.
+function fill(el, ...children) {
+  el.replaceChildren(...children.flat(Infinity).filter((c) => c != null && c !== false));
+}
+
+// Sabit simge şekilleri (kullanıcı verisi içermez).
+const ICONS = {
+  ok: '<circle cx="12" cy="12" r="9"/><path d="m8.5 12.2 2.4 2.4 4.6-5"/>',
+  crit: '<circle cx="12" cy="12" r="9"/><path d="m9.2 9.2 5.6 5.6M14.8 9.2l-5.6 5.6"/>',
+  warn: '<path d="M12 3.5 2.5 20h19z"/><path d="M12 10v4M12 17v.1"/>',
+  off: '<circle cx="12" cy="12" r="9"/><path d="M8.5 12h7"/>',
+  error: '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5M12 16.2v.1"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z"/>',
+  target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5"/>',
+  lock: '<rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>',
+  server: '<rect x="3.5" y="3.5" width="17" height="7" rx="2"/><rect x="3.5" y="13.5" width="17" height="7" rx="2"/><path d="M7.5 7h.01M7.5 17h.01"/>',
+  kernel: '<path d="m8 8-4 4 4 4M16 8l4 4-4 4M13.5 5l-3 14"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  chip: '<rect x="5" y="5" width="14" height="14" rx="2.5"/><rect x="9.5" y="9.5" width="5" height="5" rx="1"/>',
+  memory: '<rect x="2.5" y="7" width="19" height="10" rx="2"/><path d="M6.5 7v10M10.5 7v10M14.5 7v10"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/>',
+  sliders: '<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>',
+  download: '<path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19.5h14"/>',
+  power: '<path d="M12 3.5v8M6.6 6.6a7.5 7.5 0 1 0 10.8 0"/>',
+  key: '<circle cx="8" cy="15" r="4"/><path d="m11 12 8.5-8.5M16 7l2.5 2.5M14 9l2 2"/>',
+  list: '<path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.6v.1"/>',
+  disk: '<ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',
+};
+const iconTemplate = document.createElement('template');
+function icon(name) {
+  iconTemplate.innerHTML = `<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
+  return iconTemplate.content.firstElementChild;
+}
+
+const errorBox = (message) => h('p', { class: 'card-error' }, icon('error'), h('span', null, message));
+const placeholder = (text) => h('p', { class: 'placeholder' }, text);
+const tag = (kind, iconName, label) => h('span', { class: `tag ${kind}` }, icon(iconName), label);
+
+function meter(value, warn, crit) {
+  const bar = h('span');
+  bar.style.width = `${Math.min(100, Math.max(0, value ?? 0))}%`;
+  return h('div', { class: `meter ${level(value, warn, crit)}`, role: 'meter', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': value ?? 0 }, bar);
+}
+
+function mini(value) {
+  const bar = h('span');
+  bar.style.width = `${Math.min(100, Math.max(0, value ?? 0))}%`;
+  return h('span', { class: 'mini', 'aria-hidden': 'true' }, bar);
+}
+
+function table(headers, rows) {
+  return h(
+    'div',
+    { class: 'table-wrap' },
+    h(
+      'table',
+      null,
+      h('thead', null, h('tr', null, headers.map(([label, cls]) => h('th', { class: cls, scope: 'col' }, label)))),
+      h('tbody', null, rows),
+    ),
+  );
+}
+
+// ---------- Grafikler ----------
+
+const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+function withAlpha(hex, alpha) {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+  if (!m) return hex;
+  return `rgba(${parseInt(m[1], 16)}, ${parseInt(m[2], 16)}, ${parseInt(m[3], 16)}, ${alpha})`;
+}
+
+function niceMax(value) {
+  if (!(value > 0)) return 1;
+  const magnitude = 10 ** Math.floor(Math.log10(value));
+  for (const m of [1, 2, 2.5, 5, 10]) if (value * 1.1 <= m * magnitude) return m * magnitude;
+  return 10 * magnitude;
+}
+
+const tooltip = $('tooltip');
+
+// Zaman serisi çizgi grafiği: ince çizgiler, hafif alan dolgusu, artı imleci ve ipucu kutusu.
+class LineChart {
+  constructor(canvas, { max = null, format = String, axes = true, interactive = true } = {}) {
+    Object.assign(this, { canvas, max, format, axes, interactive, data: null, hover: null });
+    if (!interactive) return;
+    canvas.addEventListener('pointermove', (e) => this.onPointer(e));
+    canvas.addEventListener('pointerleave', () => this.clearHover());
+    canvas.addEventListener('blur', () => this.clearHover());
+    canvas.addEventListener('focus', () => this.moveHover(this.count() - 1));
+    canvas.addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      e.preventDefault();
+      this.moveHover((this.hover ?? this.count() - 1) + (e.key === 'ArrowLeft' ? -1 : 1));
+    });
+  }
+
+  count() {
+    return this.data?.times.length ?? 0;
+  }
+
+  set(data) {
+    this.data = data;
+    if (this.hover != null) this.hover = Math.min(this.hover, this.count() - 1);
+    this.draw();
+    if (this.hover != null) this.showTooltip();
+  }
+
+  layout() {
+    const width = this.canvas.clientWidth;
+    const height = this.canvas.clientHeight;
+    const padTop = this.axes ? 16 : 3;
+    const padRight = this.axes ? 6 : 2; // son noktadaki işaret kenarda kırpılmasın
+    const capacity = Math.max(2, this.data.capacity);
+    const step = (width - padRight) / (capacity - 1);
+    const offset = capacity - this.count(); // en yeni nokta her zaman sağ kenarda
+    const values = this.data.series.flatMap((s) => s.values).filter((v) => v != null);
+    const top = this.max ?? niceMax(Math.max(0, ...values));
+    const plot = height - padTop - 2;
+    return { width, height, padTop, step, offset, top, plot, x: (i) => (offset + i) * step, y: (v) => padTop + plot - (Math.min(v, top) / top) * plot };
+  }
+
+  draw() {
+    const { canvas } = this;
+    if (!this.data) return;
+    const dpr = window.devicePixelRatio || 1;
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    if (!width || !height) return;
+    if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
+      canvas.width = Math.round(width * dpr);
+      canvas.height = Math.round(height * dpr);
+    }
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    const g = this.layout();
+    const surface = cssVar('--surface');
+
+    if (this.axes) {
+      ctx.strokeStyle = cssVar('--grid');
+      ctx.lineWidth = 1;
+      ctx.fillStyle = cssVar('--axis');
+      ctx.font = `11px ${cssVar('--sans')}`;
+      ctx.textBaseline = 'bottom';
+      for (const f of [0, 0.5, 1]) {
+        const yy = Math.round(g.padTop + g.plot * f) + 0.5;
+        ctx.beginPath();
+        ctx.moveTo(0, yy);
+        ctx.lineTo(width, yy);
+        ctx.stroke();
+        if (f < 1) ctx.fillText(this.format(g.top * (1 - f)), 2, yy - 2);
+      }
+    }
+
+    for (const s of this.data.series) {
+      const color = cssVar(s.color);
+      const segments = [];
+      let current = [];
+      s.values.forEach((v, i) => {
+        if (v == null) {
+          if (current.length) segments.push(current);
+          current = [];
+        } else {
+          current.push([g.x(i), g.y(v)]);
+        }
+      });
+      if (current.length) segments.push(current);
+
+      for (const pts of segments) {
+        if (s.fill && pts.length > 1) {
+          const gradient = ctx.createLinearGradient(0, g.padTop, 0, height);
+          gradient.addColorStop(0, withAlpha(color, 0.18));
+          gradient.addColorStop(1, withAlpha(color, 0));
+          ctx.beginPath();
+          pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+          ctx.lineTo(pts[pts.length - 1][0], height);
+          ctx.lineTo(pts[0][0], height);
+          ctx.closePath();
+          ctx.fillStyle = gradient;
+          ctx.fill();
+        }
+        ctx.beginPath();
+        pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+        ctx.strokeStyle = color;
+        ctx.lineWidth = this.axes ? 2 : 1.5;
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        ctx.stroke();
+      }
+
+      // Son değerde nokta (yüzey renginde halkayla)
+      const lastIndex = s.values.length - 1;
+      if (this.axes && this.hover == null && s.values[lastIndex] != null) {
+        this.dot(ctx, g.x(lastIndex), g.y(s.values[lastIndex]), color, surface);
+      }
+    }
+
+    if (this.hover != null) {
+      const x = g.x(this.hover);
+      ctx.strokeStyle = cssVar('--axis');
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(Math.round(x) + 0.5, g.padTop);
+      ctx.lineTo(Math.round(x) + 0.5, height);
+      ctx.stroke();
+      for (const s of this.data.series) {
+        const v = s.values[this.hover];
+        if (v != null) this.dot(ctx, x, g.y(v), cssVar(s.color), surface);
+      }
+    }
+  }
+
+  dot(ctx, x, y, color, surface) {
+    ctx.beginPath();
+    ctx.arc(x, y, 4, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = surface;
+    ctx.stroke();
+  }
+
+  onPointer(event) {
+    if (!this.count()) return;
+    const g = this.layout();
+    const x = event.clientX - this.canvas.getBoundingClientRect().left;
+    this.moveHover(Math.round(x / g.step) - g.offset, event.clientX, event.clientY);
+  }
+
+  moveHover(index, clientX, clientY) {
+    const n = this.count();
+    if (!n) return;
+    this.hover = Math.max(0, Math.min(n - 1, index));
+    this.draw();
+    this.showTooltip(clientX, clientY);
+  }
+
+  clearHover() {
+    if (this.hover == null) return;
+    this.hover = null;
+    tooltip.hidden = true;
+    this.draw();
+  }
+
+  showTooltip(clientX, clientY) {
+    const i = this.hover;
+    const rect = this.canvas.getBoundingClientRect();
+    const g = this.layout();
+    // Klavyeyle gezinirken kutu, seçili noktanın yanına konur.
+    const px = clientX ?? rect.left + g.x(i);
+    const py = clientY ?? rect.top + g.padTop + 10;
+    fill(
+      tooltip,
+      h('div', { class: 'tt-time' }, timeFormat.format(new Date(this.data.times[i]))),
+      this.data.series.map((s) =>
+        h('div', { class: 'tt-row' }, h('i', { class: `key ${s.key}` }), h('strong', null, s.values[i] == null ? '—' : this.format(s.values[i])), h('span', { class: 'tt-name' }, s.name)),
+      ),
+    );
+    tooltip.hidden = false;
+    const tw = tooltip.offsetWidth;
+    const left = px + 14 + tw > window.innerWidth - 8 ? px - 14 - tw : px + 14;
+    tooltip.style.left = `${Math.max(8, left)}px`;
+    tooltip.style.top = `${Math.max(8, py - 12)}px`;
+  }
+}
+
+const loadChart = new LineChart($('load-chart'), { max: 100, format: pctAxis });
+const netChart = new LineChart($('net-chart'), { format: fmtRate });
+const netSpark = new LineChart(document.querySelector('#kpi-net [data-spark]'), { axes: false, interactive: false });
+const gpuChart = new LineChart($('gpu-chart'), { max: 100, format: pctAxis });
+const ioChart = new LineChart($('io-chart'), { format: fmtRate });
+const tempChart = new LineChart($('temp-chart'), { format: (v) => `${num0.format(v)} °C` });
+const allCharts = [loadChart, netChart, netSpark, gpuChart, ioChart, tempChart];
+const redrawCharts = () => allCharts.forEach((c) => c.draw());
+
+// ---------- Özet kutucukları ----------
+
+function setKpi(id, { value, sub, detail, percent, warn = 85, crit = 95, label }) {
+  const card = $(id);
+  card.querySelector('[data-value]').textContent = value;
+  const subEl = card.querySelector('[data-sub]');
+  subEl.textContent = sub || '\u00a0';
+  subEl.title = detail ?? sub ?? '';
+  if (label) card.querySelector('[data-label]').textContent = label;
+  const ring = card.querySelector('[data-ring]');
+  const lvl = level(percent, warn, crit);
+  const circumference = 2 * Math.PI * Number(ring.getAttribute('r'));
+  const share = Math.min(100, Math.max(0, percent ?? 0)) / 100;
+  ring.setAttribute('stroke-dasharray', `${(share * circumference).toFixed(2)} ${circumference.toFixed(2)}`);
+  ring.setAttribute('class', `ring-fill ${lvl}`);
+  const pill = card.querySelector('[data-status]');
+  pill.hidden = !lvl;
+  if (lvl) {
+    pill.className = `status-pill ${lvl}`;
+    fill(pill, icon(lvl === 'crit' ? 'crit' : 'warn'), t(lvl === 'crit' ? 'level.crit' : 'level.warn'));
+  }
+}
+
+function renderHost(sys, cpuCount) {
+  const host = sys?.host;
+  if (!host) return;
+  $('hostname').textContent = host.hostname;
+  $('host-os').textContent = host.os;
+  $('side-uptime').textContent = t('host.uptime', { d: fmtDuration(host.uptime) });
+  hostName = host.hostname;
+  updateTitle();
+  fill(
+    $('host-meta'),
+    h('span', null, icon('server'), host.os),
+    h('span', null, icon('kernel'), t('host.kernel', { kernel: host.kernel, arch: host.arch })),
+    h('span', null, icon('clock'), t('host.uptime', { d: fmtDuration(host.uptime) })),
+    cpuCount ? h('span', null, icon('chip'), t('host.cpuCores', { n: cpuCount })) : null,
+    sys.memory ? h('span', null, icon('memory'), t('host.memory', { size: fmtBytes(sys.memory.total) })) : null,
+  );
+}
+
+function renderSystemKpis(sys, sensors) {
+  if (sys.error) {
+    for (const id of ['kpi-cpu', 'kpi-mem', 'kpi-disk']) setKpi(id, { value: '—', sub: sys.error, percent: null });
+    return;
+  }
+  const { cpu, memory: m, disks } = sys;
+  setKpi('kpi-cpu', {
+    value: fmtPct(cpu.usage),
+    sub: `${t('kpi.load', { n: num2.format(cpu.load[0]) })}${sensors?.cpu?.package != null ? ` · ${num0.format(sensors.cpu.package)} °C` : ''}`,
+    detail: t('kpi.loadDetail', { v: cpu.load.map((v) => num2.format(v)).join(' / ') }),
+    percent: cpu.usage,
+    warn: TH.cpu[0],
+    crit: TH.cpu[1],
+  });
+  setKpi('kpi-mem', { value: fmtPct(m.percent), sub: `${fmtBytes(m.used)} / ${fmtBytes(m.total)}`, percent: m.percent, warn: TH.memory[0], crit: TH.memory[1] });
+
+  const usable = disks.filter((d) => !d.error);
+  const fullest = usable.reduce((a, d) => (a == null || d.percent > a.percent ? d : a), null);
+  if (fullest) {
+    setKpi('kpi-disk', {
+      value: fmtPct(fullest.percent),
+      sub: t('disk.free', { size: fmtBytes(fullest.available) }),
+      detail: `${usable.length > 1 ? t('kpi.fullestDisk') : ''}${fullest.mount} · ${fmtBytes(fullest.used)} / ${fmtBytes(fullest.total)}`,
+      percent: fullest.percent,
+      warn: TH.disk[0],
+      crit: TH.disk[1],
+      label: t('kpi.disk', { name: fullest.mount === '/' ? '/' : fullest.mount.split('/').pop() }),
+    });
+  } else {
+    setKpi('kpi-disk', { value: '—', sub: t('kpi.noDisk'), percent: null });
+  }
+}
+
+function renderNetKpi(net, history, capacity) {
+  const card = $('kpi-net');
+  if (net.error) {
+    card.querySelector('[data-rx]').textContent = '—';
+    card.querySelector('[data-tx]').textContent = '—';
+    card.querySelector('[data-sub]').textContent = net.error;
+    return;
+  }
+  const sum = (key) => net.interfaces.reduce((s, i) => s + (i[key] ?? 0), 0);
+  card.querySelector('[data-rx]').textContent = `↓ ${fmtRate(sum('rxRate'))}`;
+  card.querySelector('[data-tx]').textContent = `↑ ${fmtRate(sum('txRate'))}`;
+  card.querySelector('[data-sub]').textContent = t('kpi.ifaces', { n: net.interfaces.length });
+  const total = (p, k) => (p.net ? Object.values(p.net).reduce((s, v) => s + (v[k] ?? 0), 0) : null);
+  netSpark.set({
+    times: history.map((p) => p.t),
+    capacity,
+    series: [
+      { values: history.map((p) => total(p, 0)), color: '--series-1', fill: true },
+      { values: history.map((p) => total(p, 1)), color: '--series-2' },
+    ],
+  });
+}
+
+// ---------- Kartlar ----------
+
+function renderLoad(sys, history, capacity) {
+  if (sys.error) return;
+  const { cpu } = sys;
+  $('load-meta').textContent = t('cpu.cores', { n: cpu.count });
+  loadChart.set({
+    times: history.map((p) => p.t),
+    capacity,
+    series: [
+      { name: t('cpu.label'), key: 's1', color: '--series-1', fill: true, values: history.map((p) => p.cpu) },
+      { name: t('mem.label'), key: 's2', color: '--series-2', values: history.map((p) => p.mem) },
+    ],
+  });
+
+  fill(
+    $('cores'),
+    cpu.cores.map((v, i) => {
+      const bar = h('span');
+      bar.style.height = `${Math.max(2, v ?? 0)}%`;
+      return h('div', { class: `core ${level(v, 80, 95)}`, title: t('cpu.coreTitle', { i, p: fmtPct(v) }) }, bar);
+    }),
+  );
+  const busiest = cpu.cores.length ? Math.max(...cpu.cores.map((v) => v ?? 0)) : null;
+  $('cores-label').textContent = cpu.cores.length ? t('cpu.coresLabel', { p: fmtPct(busiest) }) : t('cpu.coresWaiting');
+  $('cpu-model').textContent = sys.host.cpuModel ?? '';
+}
+
+function renderDisks(sys) {
+  const body = $('disk-body');
+  if (sys.error) return fill(body, errorBox(sys.error));
+  const disks = sys.disks;
+  $('disk-meta').textContent = disks.length ? t('fs.count', { n: disks.length }) : '';
+  if (!disks.length) return fill(body, placeholder(t('disk.none')));
+  fill(
+    body,
+    h(
+      'ul',
+      { class: 'list' },
+      disks.map((d) =>
+        h(
+          'li',
+          null,
+          h(
+            'div',
+            { class: 'row-head' },
+            h('span', { class: 'row-title' }, h('span', { class: 'mono', title: d.source }, d.mount), h('span', { class: 'tag' }, d.fstype), d.readOnly ? h('span', { class: 'tag' }, t('disk.readOnly')) : null),
+            d.error ? tag('crit', 'crit', d.error) : h('span', { class: 'row-value' }, fmtPct(d.percent)),
+          ),
+          d.error ? null : meter(d.percent, ...TH.disk),
+          d.error
+            ? null
+            : h(
+                'div',
+                { class: 'row-foot' },
+                t('disk.usage', { used: fmtBytes(d.used), total: fmtBytes(d.total), free: fmtBytes(d.available) }),
+                d.inodesPercent >= 80 ? t('disk.inodes', { p: fmtPct(d.inodesPercent) }) : null,
+                d.alsoMounted.length ? t('disk.alsoMounted', { list: d.alsoMounted.join(', ') }) : null,
+              ),
+        ),
+      ),
+    ),
+  );
+}
+
+const IF_STATES = {
+  up: ['ok', 'ok', 'iface.up'],
+  down: ['crit', 'crit', 'iface.down'],
+  dormant: ['warn', 'warn', 'iface.dormant'],
+  lowerlayerdown: ['crit', 'crit', 'iface.noCable'],
+};
+
+// Sekme düğmelerini yalnızca liste değişince yeniden kurar; böylece her güncellemede
+// odak ve tıklama kaybolmaz. items: [{ id, label, title }]
+function renderTabs(container, items, selectedId, onSelect) {
+  const signature = items.map((i) => `${i.id}\u0000${i.label}`).join('\u0001');
+  if (container.dataset.signature !== signature) {
+    container.dataset.signature = signature;
+    fill(
+      container,
+      items.map((item) => {
+        const button = h('button', { type: 'button', 'data-id': item.id, title: item.title }, item.label);
+        button.addEventListener('click', () => onSelect(item.id));
+        return button;
+      }),
+    );
+  }
+  for (const button of container.children) button.setAttribute('aria-pressed', String(button.dataset.id === selectedId));
+  container.hidden = items.length < 2;
+}
+
+let selectedIface = null;
+
+function renderNetwork(net, history, capacity) {
+  const body = $('net-body');
+  const tabs = $('iface-tabs');
+  if (net.error) {
+    renderTabs(tabs, [], null, () => {});
+    return fill(body, errorBox(net.error));
+  }
+  const ifaces = net.interfaces;
+  if (!ifaces.length) {
+    renderTabs(tabs, [], null, () => {});
+    return fill(body, placeholder(t('net.none')));
+  }
+  if (!ifaces.some((i) => i.name === selectedIface)) {
+    // Varsayılan: en çok trafik gören arayüz
+    selectedIface = [...ifaces].sort((a, b) => b.rxTotal + b.txTotal - (a.rxTotal + a.txTotal))[0].name;
+  }
+
+  renderTabs(
+    tabs,
+    ifaces.map((i) => ({ id: i.name, label: i.name })),
+    selectedIface,
+    (id) => {
+      selectedIface = id;
+      if (lastData) render(lastData);
+    },
+  );
+
+  netChart.set({
+    times: history.map((p) => p.t),
+    capacity,
+    series: [
+      { name: t('net.rx'), key: 's1', color: '--series-1', fill: true, values: history.map((p) => p.net?.[selectedIface]?.[0] ?? null) },
+      { name: t('net.tx'), key: 's2', color: '--series-2', values: history.map((p) => p.net?.[selectedIface]?.[1] ?? null) },
+    ],
+  });
+  $('net-chart').setAttribute('aria-label', t('net.chartLabel', { name: selectedIface }));
+
+  fill(
+    body,
+    ifaces.map((i) => {
+      const [cls, iconName, labelKey] = IF_STATES[i.state] ?? ['', 'off', 'iface.unknown'];
+      return h(
+        'div',
+        { class: 'iface' },
+        h('div', { class: 'iface-top' }, h('span', null, i.name), tag(cls, iconName, t(labelKey))),
+        h('div', { class: 'iface-rates' }, h('span', null, h('i', { class: 'key s1' }), `↓ ${fmtRate(i.rxRate)}`), h('span', null, h('i', { class: 'key s2' }), `↑ ${fmtRate(i.txRate)}`)),
+        i.addresses.length ? h('div', { class: 'addr mono' }, i.addresses.map((a) => h('div', null, a))) : null,
+        h(
+          'div',
+          { class: 'row-foot' },
+          t('net.totals', { rx: fmtBytes(i.rxTotal), tx: fmtBytes(i.txTotal) }),
+          i.errors ? t('net.errors', { n: num0.format(i.errors) }) : null,
+          i.drops ? t('net.drops', { n: num0.format(i.drops) }) : null,
+        ),
+      );
+    }),
+  );
+}
+
+const EXPOSURE = {
+  all: ['info', 'globe', 'ports.all'],
+  specific: ['info', 'target', 'ports.specific'],
+  local: ['', 'lock', 'ports.local'],
+};
+
+function renderPorts(net) {
+  const body = $('ports-body');
+  if (net.error) return fill(body, errorBox(net.error));
+  const ports = net.ports;
+  const open = ports.filter((p) => p.exposure !== 'local').length;
+  $('ports-meta').textContent = ports.length ? t('ports.summary', { n: ports.length, open }) : '';
+  if (!ports.length) return fill(body, placeholder(t('ports.none')));
+  fill(
+    body,
+    table(
+      [[t('ports.port')], [t('ports.address')], [t('ports.access'), 'r']],
+      ports.map((p) => {
+        const [cls, iconName, labelKey] = EXPOSURE[p.exposure];
+        return h(
+          'tr',
+          null,
+          h('td', { class: 'nowrap' }, h('strong', { class: 'num' }, p.port), ' ', h('span', { class: 'muted small' }, `${p.proto.toUpperCase()}${WELL_KNOWN_PORTS[p.port] ? ` · ${WELL_KNOWN_PORTS[p.port]}` : ''}`)),
+          h('td', { class: 'mono break' }, p.addresses.join(', ')),
+          h('td', { class: 'r' }, tag(cls, iconName, t(labelKey))),
+        );
+      }),
+    ),
+  );
+}
+
+let procSort = 'cpu';
+
+function renderProcesses(p) {
+  const body = $('proc-body');
+  if (p.error) {
+    $('proc-meta').textContent = '';
+    return fill(body, errorBox(p.error));
+  }
+  $('proc-meta').textContent = [t('proc.count', { n: num0.format(p.total) }), t('proc.threads', { n: num0.format(p.threads) }), p.zombie ? t('proc.zombies', { n: p.zombie }) : null]
+    .filter(Boolean)
+    .join(' · ');
+  const list = procSort === 'cpu' ? p.byCpu : p.byMem;
+  if (!list) return fill(body, placeholder(t('proc.waiting')));
+  const cpuScale = Math.max(100, ...list.map((r) => r.cpu ?? 0));
+  fill(
+    body,
+    table(
+      [['PID'], [t('proc.user')], ['CPU', 'r'], [t('proc.memory'), 'r'], [t('proc.command')]],
+      list.map((r) =>
+        h(
+          'tr',
+          null,
+          h('td', { class: 'mono' }, r.pid),
+          h('td', null, h('span', { class: 'user-cell' }, h('span', { class: 'user-dot', 'aria-hidden': 'true' }, String(r.user).slice(0, 1)), r.user)),
+          h('td', { class: 'r' }, h('span', { class: 'bar-cell' }, mini(((r.cpu ?? 0) / cpuScale) * 100), r.cpu == null ? '—' : fmtPct(r.cpu))),
+          h('td', { class: 'r' }, h('span', { class: 'bar-cell' }, mini(r.memoryPercent), fmtBytes(r.memory))),
+          h('td', { class: 'cmd', title: r.command }, r.command),
+        ),
+      ),
+    ),
+    h('p', { class: 'row-foot' }, t('proc.cpuNote')),
+  );
+}
+
+function serviceState(s) {
+  if (s.load === 'not-found') return ['off', 'off', t('svc.notFound')];
+  if (s.active === 'active') return ['ok', 'ok', s.sub === 'running' ? t('state.running') : s.sub === 'exited' ? t('svc.exited') : s.sub];
+  if (s.active === 'failed') return ['crit', 'crit', t('svc.failed')];
+  if (s.active === 'activating') return ['warn', 'warn', t('svc.activating')];
+  if (s.active === 'deactivating') return ['warn', 'warn', t('svc.deactivating')];
+  if (s.active === 'reloading') return ['warn', 'warn', t('svc.reloading')];
+  if (s.active === 'inactive') return ['off', 'off', t('state.stopped')];
+  return ['off', 'off', s.active];
+}
+
+function renderServices(svc) {
+  const body = $('svc-body');
+  if (svc.error) return fill(body, errorBox(svc.error));
+  const units = svc.units;
+  if (!units.length) {
+    $('svc-meta').textContent = '';
+    return fill(body, placeholder(t('svc.none')));
+  }
+  const healthy = units.filter((u) => u.active === 'active').length;
+  $('svc-meta').textContent = t('svc.running', { a: healthy, b: units.length });
+  fill(
+    body,
+    h(
+      'ul',
+      { class: 'list' },
+      units.map((u) => {
+        const [cls, iconName, label] = serviceState(u);
+        const details = [u.activeFor != null ? fmtDuration(u.activeFor) : null, u.memory != null ? fmtBytes(u.memory) : null].filter(Boolean);
+        return h(
+          'li',
+          { class: 'svc' },
+          h('span', { class: `svc-icon ${cls}` }, icon(iconName)),
+          h('div', { class: 'svc-main' }, h('div', { class: 'svc-name' }, u.name), h('div', { class: 'svc-desc', title: u.description }, u.description || u.unit)),
+          h(
+            'div',
+            { class: 'svc-side' },
+            h('div', { class: 'svc-state' }, label),
+            details.length ? h('div', { class: 'muted' }, details.join(' · ')) : null,
+            u.restarts ? h('div', { class: 'muted' }, t('svc.restarts', { n: u.restarts })) : null,
+          ),
+        );
+      }),
+    ),
+  );
+}
+
+function containerState(c) {
+  if (c.state === 'running') return /unhealthy/.test(c.status) ? ['warn', 'warn', t('docker.unhealthy')] : ['ok', 'ok', t('state.running')];
+  if (c.state === 'exited') {
+    const code = Number(/Exited \((\d+)\)/.exec(c.status)?.[1] ?? 0);
+    return code ? ['crit', 'crit', t('docker.exitCode', { code })] : ['', 'off', t('state.stopped')];
+  }
+  if (c.state === 'restarting') return ['warn', 'warn', t('docker.restarting')];
+  if (c.state === 'paused') return ['warn', 'warn', t('docker.paused')];
+  if (c.state === 'dead') return ['crit', 'crit', t('docker.dead')];
+  return ['', 'off', c.state];
+}
+
+function renderDocker(docker) {
+  const card = $('docker-card');
+  card.hidden = Boolean(docker.disabled);
+  if (docker.disabled) return;
+  const body = $('docker-body');
+  if (docker.error) {
+    $('docker-meta').textContent = '';
+    return fill(body, errorBox(docker.error));
+  }
+  $('docker-meta').textContent = t('docker.running', { a: docker.running, b: docker.total });
+  if (!docker.containers.length) return fill(body, placeholder(t('docker.none')));
+  fill(
+    body,
+    table(
+      [[t('docker.name')], [t('docker.image')], [t('docker.state')], [t('docker.ports'), 'r']],
+      docker.containers.map((c) => {
+        const [cls, iconName, label] = containerState(c);
+        return h(
+          'tr',
+          null,
+          h('td', null, h('strong', null, c.name), h('div', { class: 'mono muted' }, c.id)),
+          h('td', { class: 'mono' }, c.image),
+          h('td', null, tag(cls, iconName, label), h('div', { class: 'muted small' }, c.status)),
+          h('td', { class: 'r mono' }, c.ports.join(', ') || '—'),
+        );
+      }),
+    ),
+  );
+}
+
+// ---------- Depolama: disk etkinliği ve sağlık ----------
+
+let selectedDisk = null;
+
+const SMART_STATES = {
+  ok: ['ok', 'ok', 'smart.ok'],
+  warn: ['warn', 'warn', 'smart.warn'],
+  crit: ['crit', 'crit', 'smart.crit'],
+  unknown: ['', 'off', 'smart.unknown'],
+};
+
+// Diski kullanıcının tanıdığı adla gösterir: sistem diski ya da bağlandığı klasörün adı.
+function diskLabel(d) {
+  if (d.mounts.includes('/')) return t('disk.system');
+  const mount = d.mounts.find((m) => /^\/(mnt|media|srv|data)\//.test(m)) ?? d.mounts[0];
+  return mount ? mount.split('/').filter(Boolean).pop() : d.name;
+}
+
+// Disk boyutları üreticiler gibi ondalık birimle yazılır (1 TB = 10^12 bayt).
+const fmtDiskSize = (bytes) => (bytes >= 1e12 ? `${num1.format(bytes / 1e12)} TB` : `${num0.format(bytes / 1e9)} GB`);
+
+function fmtHours(hours) {
+  if (hours == null) return '—';
+  if (hours < 48) return t('dur.hours', { n: num0.format(hours) });
+  if (hours < 24 * 365) return t('dur.days', { n: num0.format(hours / 24) });
+  return t('dur.years', { n: num1.format(hours / 8766) });
+}
+
+const fmtAgo = (ts) => t('time.ago', { d: fmtDuration(Math.max(0, (Date.now() - ts) / 1000)) });
+const metric = (label, value, title) => h('div', null, h('dt', null, label), h('dd', { title: title ?? value }, value));
+
+function physTile(d) {
+  const sm = d.smart;
+  const [cls, iconName, labelKey] = sm ? SMART_STATES[sm.status] ?? SMART_STATES.unknown : ['', 'off', 'smart.none'];
+  const problem = sm && (sm.status === 'warn' || sm.status === 'crit');
+  return h(
+    'div',
+    { class: `phys ${problem ? sm.status : ''}` },
+    h(
+      'div',
+      { class: 'phys-head' },
+      h('div', { class: 'phys-title' }, h('strong', null, diskLabel(d)), h('span', { title: d.model }, `${d.model} · ${fmtDiskSize(d.size)} · /dev/${d.name}`)),
+      h('div', { class: 'phys-tags' }, h('span', { class: 'tag' }, d.type), sm?.standby ? tag('', 'off', t('disk.standby')) : null, tag(cls, iconName, t(labelKey))),
+    ),
+    d.mounts.length ? h('div', { class: 'mono muted' }, d.mounts.join('  ')) : h('div', { class: 'muted small' }, t('disk.notMounted')),
+    h(
+      'dl',
+      { class: 'metrics' },
+      metric(t('io.read'), fmtRate(d.readRate)),
+      metric(t('io.write'), fmtRate(d.writeRate)),
+      metric(t('disk.busy'), fmtPct(d.busy)),
+      metric(t('temp.label'), sm?.temperature != null ? `${num0.format(sm.temperature)} °C` : '—'),
+      metric(t('disk.powerOn'), fmtHours(sm?.powerOnHours), sm?.powerOnHours != null ? t('dur.hoursLong', { n: num0.format(sm.powerOnHours) }) : undefined),
+      metric(t('disk.wear'), sm?.wearPercent != null ? fmtPct(sm.wearPercent) : '—'),
+    ),
+    sm?.reasons?.length ? h('ul', { class: 'reasons' }, sm.reasons.map((r) => h('li', null, r))) : null,
+    sm && (sm.writtenBytes != null || sm.powerCycles != null)
+      ? h(
+          'div',
+          { class: 'row-foot' },
+          [sm.writtenBytes != null ? t('disk.written', { size: fmtBytes(sm.writtenBytes) }) : null, sm.powerCycles != null ? t('disk.powerCycles', { n: num0.format(sm.powerCycles) }) : null]
+            .filter(Boolean)
+            .join(' · '),
+        )
+      : null,
+  );
+}
+
+function renderStorage(st, history, capacity) {
+  const body = $('phys-body');
+  if (st.error) {
+    $('phys-meta').textContent = '';
+    return fill(body, errorBox(st.error));
+  }
+  const devices = st.devices;
+  if (!devices.some((d) => d.name === selectedDisk)) {
+    // Varsayılan: şu an en çok okuma/yazma yapan disk
+    selectedDisk = [...devices].sort((a, b) => (b.readRate ?? 0) + (b.writeRate ?? 0) - ((a.readRate ?? 0) + (a.writeRate ?? 0)))[0]?.name ?? null;
+  }
+  renderTabs(
+    $('io-tabs'),
+    devices.map((d) => ({ id: d.name, label: diskLabel(d), title: `${d.model} (/dev/${d.name})` })),
+    selectedDisk,
+    (id) => {
+      selectedDisk = id;
+      if (lastData) render(lastData);
+    },
+  );
+  ioChart.set({
+    times: history.map((p) => p.t),
+    capacity,
+    series: [
+      { name: t('io.read'), key: 's1', color: '--series-1', fill: true, values: history.map((p) => p.io?.[selectedDisk]?.[0] ?? null) },
+      { name: t('io.write'), key: 's2', color: '--series-2', values: history.map((p) => p.io?.[selectedDisk]?.[1] ?? null) },
+    ],
+  });
+  const sum = (key) => devices.reduce((s, d) => s + (d[key] ?? 0), 0);
+  $('io-meta').textContent = t('io.meta', { r: fmtRate(sum('readRate')), w: fmtRate(sum('writeRate')) });
+
+  const smart = st.smart;
+  $('phys-meta').textContent = [t('disk.count', { n: devices.length }), smart.available ? t('disk.smartRead', { ago: fmtAgo(smart.updated) }) : null].filter(Boolean).join(' · ');
+  const notice = smart.available
+    ? null
+    : h(
+        'p',
+        { class: 'notice' },
+        icon('error'),
+        h('span', null, t('smart.missing.before'), h('code', null, 'smartmontools'), t('smart.missing.after')),
+      );
+  // Sorunlu diskler başa alınır.
+  const rank = { crit: 0, warn: 1 };
+  const sorted = [...devices].sort((a, b) => (rank[a.smart?.status] ?? 2) - (rank[b.smart?.status] ?? 2));
+  fill(body, notice, h('div', { class: 'phys-grid' }, sorted.map(physTile)));
+}
+
+// ---------- Sıcaklık ve fanlar ----------
+
+function tempLevel(sensor) {
+  const crit = sensor.crit ?? TH.temperature[1];
+  const high = sensor.high ?? Math.min(crit - 5, TH.temperature[0]);
+  return sensor.value >= crit ? 'crit' : sensor.value >= high ? 'warn' : '';
+}
+
+function tempRow(sensor) {
+  const crit = sensor.crit ?? TH.temperature[1];
+  const high = sensor.high ?? Math.min(crit - 5, TH.temperature[0]);
+  const lvl = tempLevel(sensor);
+  return statRow(
+    h('span', null, sensor.label, lvl ? ' ' : null, lvl ? tag(lvl, lvl === 'crit' ? 'crit' : 'warn', t(lvl === 'crit' ? 'level.crit' : 'level.warn')) : null),
+    `${num1.format(sensor.value)} °C`,
+    meter((sensor.value / crit) * 100, (high / crit) * 100, 100),
+  );
+}
+
+const fanRow = (f) => statRow(f.label, t('fan.rpm', { n: num0.format(f.rpm) }), f.max ? meter((f.rpm / f.max) * 100, 101, 101) : null);
+
+// SATA disklerin sıcaklığı hwmon'da değil SMART'ta olduğu için ayrı bir grup olarak eklenir.
+function smartTempGroup(storage) {
+  const temps = (storage?.devices ?? [])
+    .filter((d) => d.type !== 'NVMe SSD' && d.smart?.temperature != null)
+    .map((d) => ({ label: diskLabel(d), value: d.smart.temperature, high: d.type === 'HDD' ? 50 : 60, crit: d.type === 'HDD' ? 60 : 70 }));
+  return temps.length ? { name: t('temp.sataGroup'), kind: 'disk', temps, fans: [] } : null;
+}
+
+function renderSensors(sensors, history, capacity, storage) {
+  if (sensors.error) {
+    fill($('sensor-body'), errorBox(sensors.error));
+    fill($('fan-body'), errorBox(sensors.error));
+    return;
+  }
+  const cpu = sensors.cpu;
+  $('temp-meta').textContent = cpu ? t('temp.meta', { cpu: num0.format(cpu.package), high: num0.format(cpu.high) }) : '';
+  tempChart.set({
+    times: history.map((p) => p.t),
+    capacity,
+    series: [
+      { name: t('temp.cpuPackage'), key: 's1', color: '--series-1', fill: true, values: history.map((p) => p.temp?.[0] ?? null) },
+      { name: t('temp.hottestDisk'), key: 's2', color: '--series-2', values: history.map((p) => p.temp?.[1] ?? null) },
+    ],
+  });
+
+  const fans = sensors.groups.flatMap((g) => g.fans);
+  $('fan-meta').textContent = fans.length ? t('fan.count', { n: fans.length }) : '';
+  fill($('fan-body'), fans.length ? h('ul', { class: 'list' }, fans.map(fanRow)) : placeholder(t('fan.none')));
+
+  const groups = [...sensors.groups, smartTempGroup(storage)].filter((g) => g?.temps.length);
+  $('sensor-meta').textContent = t('sensor.count', { n: groups.reduce((sum, g) => sum + g.temps.length, 0) });
+  fill(
+    $('sensor-body'),
+    groups.length
+      ? groups.map((g) => h('div', { class: 'sensor-group' }, h('h3', null, g.name), h('ul', { class: 'list' }, g.temps.map(tempRow))))
+      : placeholder(t('temp.none')),
+  );
+}
+
+// ---------- Genel bakış: dikkat gerektirenler ----------
+
+function renderAlerts(s) {
+  const items = [];
+  for (const d of s.storage?.devices ?? []) {
+    const sm = d.smart;
+    if (sm && (sm.status === 'crit' || sm.status === 'warn')) {
+      items.push({
+        level: sm.status,
+        title: t(sm.status === 'crit' ? 'alert.diskCrit' : 'alert.diskWarn', { disk: diskLabel(d) }),
+        detail: `${d.model} · ${sm.reasons.join(' · ')}`,
+        href: '#/depolama',
+      });
+    }
+  }
+  for (const u of s.services?.units ?? []) {
+    if (u.active === 'failed') items.push({ level: 'crit', title: t('alert.svcFailed', { name: u.name }), detail: u.description || u.unit, href: '#/servisler' });
+  }
+  for (const d of s.system?.disks ?? []) {
+    if (d.percent >= TH.disk[0]) items.push({ level: d.percent >= TH.disk[1] ? 'crit' : 'warn', title: t('alert.diskFull', { mount: d.mount, p: fmtPct(d.percent) }), detail: t('alert.diskSpace', { size: fmtBytes(d.available) }), href: '#/depolama' });
+  }
+  for (const g of s.sensors?.groups ?? []) {
+    const hot = g.temps.filter((x) => tempLevel(x)).sort((a, b) => b.value - a.value)[0];
+    if (hot) items.push({ level: tempLevel(hot), title: `${g.name}: ${num0.format(hot.value)} °C`, detail: t('alert.tempHigh', { label: hot.label }), href: '#/donanim' });
+  }
+  for (const g of s.gpu?.gpus ?? []) {
+    const lvl = level(g.temperature, ...TH.temperature);
+    if (lvl) items.push({ level: lvl, title: `${g.name}: ${num0.format(g.temperature)} °C`, detail: t('alert.gpuTemp'), href: '#/ekran-karti' });
+  }
+  items.sort((a, b) => (a.level === 'crit' ? 0 : 1) - (b.level === 'crit' ? 0 : 1));
+
+  const box = $('alerts');
+  box.hidden = !items.length;
+  fill(
+    box,
+    items.map((it) =>
+      h(
+        'a',
+        { class: `alert-row ${it.level}`, href: it.href },
+        icon(it.level === 'crit' ? 'crit' : 'warn'),
+        h('div', { class: 'alert-text' }, h('strong', null, it.title), h('span', { title: it.detail }, it.detail)),
+        h('span', { class: 'alert-go' }, t('common.details')),
+      ),
+    ),
+  );
+}
+
+let selectedGpu = null;
+
+function statRow(label, value, meterEl) {
+  return h('li', null, h('div', { class: 'row-head' }, h('span', { class: 'row-title' }, label), h('span', { class: 'row-value' }, value)), meterEl);
+}
+
+// Sekme etiketleri: tek kartta üretici adı, aynı üreticiden birden fazla kart varsa sıra numarası.
+function gpuLabels(gpus) {
+  const counts = {};
+  for (const g of gpus) counts[g.vendor] = (counts[g.vendor] ?? 0) + 1;
+  const seen = {};
+  return gpus.map((g) => {
+    seen[g.vendor] = (seen[g.vendor] ?? 0) + 1;
+    return counts[g.vendor] > 1 ? `${g.vendor} ${seen[g.vendor]}` : g.vendor;
+  });
+}
+
+function gpuStats(g) {
+  if (g.state === 'suspended') {
+    return h('p', { class: 'muted small' }, t('gpu.suspended'));
+  }
+  const tempLevel = level(g.temperature, ...TH.temperature);
+  let memoryRow = null;
+  if (g.memoryTotal != null) {
+    memoryRow = statRow('VRAM', g.memoryUsed == null ? '—' : `${fmtBytes(g.memoryUsed)} / ${fmtBytes(g.memoryTotal)}`, meter(g.memoryPercent));
+  } else if (g.sharedMemory) {
+    memoryRow = statRow(t('gpu.memory'), t('gpu.shared'));
+  }
+  return [
+    h(
+      'ul',
+      { class: 'list' },
+      memoryRow,
+      g.temperature != null
+        ? statRow(
+            h('span', null, t('gpu.temp'), tempLevel ? ' ' : null, tempLevel ? tag(tempLevel, tempLevel === 'crit' ? 'crit' : 'warn', t(tempLevel === 'crit' ? 'level.crit' : 'level.warn')) : null),
+            `${num0.format(g.temperature)} °C`,
+            meter(g.temperature, ...TH.temperature),
+          )
+        : null,
+      g.powerDraw != null
+        ? statRow(t('gpu.power'), g.powerLimit ? `${num1.format(g.powerDraw)} / ${num0.format(g.powerLimit)} W` : `${num1.format(g.powerDraw)} W`, g.powerLimit ? meter((g.powerDraw / g.powerLimit) * 100, 101, 101) : null)
+        : null,
+    ),
+    h(
+      'div',
+      { class: 'gpu-facts' },
+      g.fan != null ? h('span', null, t('gpu.fan', { v: fmtPct(g.fan) })) : g.fanRpm != null ? h('span', null, `Fan ${num0.format(g.fanRpm)} RPM`) : null,
+      g.clock != null || g.clockMax != null ? h('span', null, t('gpu.clock', { cur: g.clock == null ? '—' : num0.format(g.clock), max: g.clockMax ? ` / ${num0.format(g.clockMax)}` : '' })) : null,
+      g.memoryUtilization != null ? h('span', null, t('gpu.memBus', { p: fmtPct(g.memoryUtilization) })) : null,
+    ),
+  ];
+}
+
+function gpuProcesses(g) {
+  if (g.processes == null) {
+    return [h('h3', null, t('gpu.procs')), h('p', { class: 'muted small' }, t('gpu.procsNvidiaOnly'))];
+  }
+  return [
+    h('h3', null, t('gpu.procs')),
+    g.processes.length
+      ? table(
+          [['PID'], [t('gpu.process')], ['VRAM', 'r']],
+          g.processes.map((p) =>
+            h(
+              'tr',
+              null,
+              h('td', { class: 'mono' }, p.pid),
+              h('td', { class: 'cmd', title: p.command }, p.command),
+              h('td', { class: 'r' }, h('span', { class: 'bar-cell' }, mini(g.memoryTotal ? (p.memory / g.memoryTotal) * 100 : 0), fmtBytes(p.memory))),
+            ),
+          ),
+        )
+      : h('p', { class: 'muted small' }, t('gpu.noProcs')),
+  ];
+}
+
+function renderGpu(gpu, history, capacity) {
+  const card = $('gpu-card');
+  const gpus = gpu.gpus ?? [];
+  // Kapalıysa ya da sistemde desteklenen kart yoksa kart hiç gösterilmez.
+  card.hidden = Boolean(gpu.disabled) || (!gpu.error && !gpus.length);
+  $('nav-gpu').hidden = card.hidden;
+  if (card.hidden) {
+    if (currentRoute() === 'ekran-karti') window.location.replace('#/genel');
+    return;
+  }
+  const body = $('gpu-body');
+  const tabs = $('gpu-tabs');
+  if (gpu.error) {
+    $('gpu-meta').textContent = '';
+    renderTabs(tabs, [], null, () => {});
+    fill($('gpu-procs'));
+    return fill(body, errorBox(gpu.error));
+  }
+  if (!gpus.some((g) => g.id === selectedGpu)) selectedGpu = gpus[0].id;
+  const g = gpus.find((x) => x.id === selectedGpu);
+  const labels = gpuLabels(gpus);
+
+  const driver = g.driverVersion ? t('gpu.driverVersion', { v: g.driverVersion }) : t('gpu.driverName', { name: g.driver });
+  $('gpu-meta').textContent = gpus.length > 1 ? t('gpu.count', { n: gpus.length, driver }) : driver;
+  renderTabs(
+    tabs,
+    gpus.map((x, i) => ({ id: x.id, label: labels[i], title: x.name })),
+    selectedGpu,
+    (id) => {
+      selectedGpu = id;
+      if (lastData) render(lastData);
+    },
+  );
+
+  gpuChart.set({
+    times: history.map((p) => p.t),
+    capacity,
+    series: [
+      { name: t('gpu.util'), key: 's1', color: '--series-1', fill: true, values: history.map((p) => p.gpu?.[g.id]?.[0] ?? null) },
+      { name: 'VRAM', key: 's2', color: '--series-2', values: history.map((p) => p.gpu?.[g.id]?.[1] ?? null) },
+    ],
+  });
+
+  fill(
+    body,
+    h(
+      'div',
+      { class: 'gpu-top' },
+      h(
+        'div',
+        null,
+        h('div', { class: 'gpu-name' }, g.name),
+        h('div', { class: 'muted small' }, [g.vendor, g.pstate ? t('gpu.pstate', { p: g.pstate }) : null, g.sharedMemory ? t('gpu.integrated') : null].filter(Boolean).join(' · ')),
+      ),
+      h('div', { class: 'gpu-big' }, fmtPct(g.utilization), h('small', null, t(g.utilizationApprox ? 'gpu.usageApprox' : 'gpu.usage'))),
+    ),
+    gpuStats(g),
+    gpu.warning ? h('p', { class: 'card-error' }, icon('warn'), h('span', null, gpu.warning)) : null,
+  );
+  fill($('gpu-procs'), gpuProcesses(g));
+}
+
+// Genel bakıştaki ekran kartı kutucuğu: birden çok kart varsa ilk (genellikle harici) kart gösterilir.
+function renderGpuKpi(gpu) {
+  const tile = $('kpi-gpu');
+  const g = gpu?.gpus?.find((x) => x.state !== 'suspended');
+  tile.hidden = !g;
+  if (!g) return;
+  const sub = g.memoryTotal != null ? `VRAM ${fmtPct(g.memoryPercent)}` : g.temperature != null ? `${num0.format(g.temperature)} °C` : g.vendor;
+  const detail = [g.name, g.memoryTotal != null ? `VRAM ${fmtBytes(g.memoryUsed)} / ${fmtBytes(g.memoryTotal)}` : null, g.temperature != null ? `${num0.format(g.temperature)} °C` : null]
+    .filter(Boolean)
+    .join(' · ');
+  setKpi('kpi-gpu', { value: fmtPct(g.utilization), sub, detail, percent: g.utilization, warn: 90, crit: 98, label: t('kpi.gpu', { vendor: g.vendor }) });
+}
+
+function setBadge(route, kind, text) {
+  const badge = document.querySelector(`[data-badge="${route}"]`);
+  if (!badge) return;
+  badge.hidden = !text;
+  badge.className = `nav-badge ${kind ?? ''}`;
+  badge.textContent = text ?? '';
+}
+
+// Menüdeki rozetler sorunlu bir şey olduğunda dikkat çeker.
+function renderBadges(s) {
+  const units = s.services?.units ?? [];
+  const failed = units.filter((u) => u.active === 'failed').length;
+  const stopped = units.filter((u) => u.active !== 'active').length;
+  const exited = (s.docker?.containers ?? []).filter((c) => containerState(c)[0] === 'crit').length;
+  if (failed + exited) setBadge('servisler', 'crit', String(failed + exited));
+  else if (stopped) setBadge('servisler', 'warn', String(stopped));
+  else setBadge('servisler', null, null);
+
+  const disks = (s.system?.disks ?? []).filter((d) => !d.error);
+  const fullest = Math.max(0, ...disks.map((d) => d.percent ?? 0));
+  const diskLevel = level(fullest, ...TH.disk);
+  const smartStates = (s.storage?.devices ?? []).map((d) => d.smart?.status);
+  const smartCrit = smartStates.filter((x) => x === 'crit').length;
+  const smartWarn = smartStates.filter((x) => x === 'warn').length;
+  // SMART sorunu, doluluktan daha önemlidir.
+  if (smartCrit) setBadge('depolama', 'crit', String(smartCrit));
+  else if (smartWarn) setBadge('depolama', 'warn', String(smartWarn));
+  else setBadge('depolama', diskLevel || null, diskLevel ? fmtPct(fullest) : null);
+
+  const hotSensor = (s.sensors?.groups ?? []).flatMap((g) => g.temps).filter((x) => tempLevel(x)).sort((a, b) => b.value - a.value)[0];
+  setBadge('donanim', hotSensor ? tempLevel(hotSensor) : null, hotSensor ? `${num0.format(hotSensor.value)} °C` : null);
+
+  const hottest = Math.max(0, ...(s.gpu?.gpus ?? []).map((g) => g.temperature ?? 0));
+  const gpuLevel = level(hottest, ...TH.temperature);
+  setBadge('ekran-karti', gpuLevel || null, gpuLevel ? `${num0.format(hottest)} °C` : null);
+
+  const zombies = s.processes?.zombie ?? 0;
+  setBadge('surecler', zombies ? 'warn' : null, zombies ? String(zombies) : null);
+}
+
+// Bir kart hata verirse diğerleri çizilmeye devam eder.
+function safely(fn, ...args) {
+  try {
+    fn(...args);
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+let lastData = null;
+
+function renderUser(user) {
+  if (!user) return;
+  $('avatar').textContent = user.slice(0, 1);
+  $('username-label').textContent = user;
+  $('menu-user').textContent = user;
+}
+
+function render(data) {
+  lastData = data;
+  if (data.settings?.thresholds) TH = { ...TH, ...data.settings.thresholds };
+  const s = data.snapshot;
+  if (!s) return;
+  const { history, historySize: capacity } = data;
+
+  safely(renderUser, data.user);
+  safely(renderHost, s.system, s.system?.cpu?.count);
+  if (s.system) {
+    safely(renderSystemKpis, s.system, s.sensors);
+    safely(renderLoad, s.system, history, capacity);
+    safely(renderDisks, s.system);
+  }
+  if (s.network) {
+    safely(renderNetKpi, s.network, history, capacity);
+    safely(renderNetwork, s.network, history, capacity);
+    safely(renderPorts, s.network);
+  }
+  if (s.gpu) safely(renderGpu, s.gpu, history, capacity);
+  if (s.processes) safely(renderProcesses, s.processes);
+  if (s.services) safely(renderServices, s.services);
+  if (s.docker) safely(renderDocker, s.docker);
+  safely(renderGpuKpi, s.gpu);
+  if (s.storage) safely(renderStorage, s.storage, history, capacity);
+  if (s.sensors) safely(renderSensors, s.sensors, history, capacity, s.storage);
+  safely(renderAlerts, s);
+  safely(renderBadges, s);
+
+  const minutes = Math.round((capacity * data.intervalSeconds) / 60);
+  $('foot-text').textContent = t('foot.text', { s: data.intervalSeconds, m: minutes });
+  for (const el of document.querySelectorAll('[data-x-start]')) el.textContent = t('chart.ago', { m: minutes });
+}
+
+// ---------- Ayarlar ----------
+
+const WEEKDAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+const INTERVAL_CHOICES = [1, 2, 3, 5, 10, 15, 30, 60];
+const HISTORY_CHOICES = [5, 10, 15, 30, 60, 120];
+const dateTimeFormat = new Intl.DateTimeFormat(locale, { dateStyle: 'short', timeStyle: 'short' });
+
+let settingsState = null; // { user, panel, system }
+let settingsBuilt = false;
+let settingsTimer = null;
+// Root yardımcısına giden ve sonucu beklenen istekler
+let pendingRequests = [];
+const settingsCards = {};
+
+async function api(pathname, body) {
+  const init = body === undefined ? { cache: 'no-store' } : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+  const res = await fetch(new URL(pathname, window.location.origin), init);
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && data.code === 'no_session') window.location.replace(`/login${window.location.hash}`);
+  return { ok: res.ok, status: res.status, data };
+}
+
+// --- Form yardımcıları ---
+
+function formRow(label, control, hint) {
+  return h('div', { class: 'form-row' }, h('div', { class: 'form-label' }, label, hint ? h('small', null, hint) : null), h('div', { class: 'form-control' }, control));
+}
+
+function selectEl(options, value) {
+  const el = h('select', { class: 'select' }, options.map(([v, label]) => h('option', { value: String(v) }, label)));
+  el.value = String(value);
+  return el;
+}
+
+// Etiket verilmezse anahtarın yanında durumu (Açık / Kapalı) yazar.
+function switchEl(checked, label, ariaLabel) {
+  const input = h('input', { type: 'checkbox', role: 'switch', 'aria-label': ariaLabel ?? label });
+  input.checked = Boolean(checked);
+  const text = h('span', null, label ?? '');
+  const listeners = [];
+  const refresh = () => {
+    if (label == null) text.textContent = t(input.checked ? 'set.on' : 'set.off');
+    for (const fn of listeners) fn(input.checked);
+  };
+  input.addEventListener('change', refresh);
+  refresh();
+  return {
+    input,
+    el: h('label', { class: 'switch' }, input, h('span', { class: 'track', 'aria-hidden': 'true' }), text),
+    set(value) {
+      input.checked = Boolean(value);
+      refresh();
+    },
+    onChange(fn) {
+      listeners.push(fn);
+      fn(input.checked);
+    },
+  };
+}
+
+// Anlık ve geri alınamaz işlemler kaydet düğmesinden ayrı, açıklamalı bir kutuda durur.
+function actionBlock(title, desc, actionButton, status) {
+  return h('div', { class: 'action-block' }, h('div', null, h('strong', null, title), h('p', null, desc), status.el), actionButton);
+}
+
+function inputEl(type, value, attrs = {}) {
+  const el = h('input', { type, class: `input ${attrs.class ?? ''}`, ...attrs });
+  if (value != null) el.value = String(value);
+  return el;
+}
+
+function button(label, kind, onClick) {
+  const el = h('button', { type: 'button', class: `btn${kind ? ` btn-${kind}` : ''}` }, label);
+  el.addEventListener('click', onClick);
+  return el;
+}
+
+function segEl(options, value, onChange) {
+  let current = value;
+  const buttons = options.map(([v, label]) => {
+    const b = h('button', { type: 'button', 'aria-pressed': String(v === value) }, label);
+    b.addEventListener('click', () => {
+      current = v;
+      for (const x of buttons) x.setAttribute('aria-pressed', String(x === b));
+      onChange?.(v);
+    });
+    return b;
+  });
+  const el = h('div', { class: 'seg', role: 'group' }, buttons);
+  return {
+    el,
+    get value() {
+      return current;
+    },
+    set(v) {
+      current = v;
+      buttons.forEach((b, i) => b.setAttribute('aria-pressed', String(options[i][0] === v)));
+    },
+    disable(flag) {
+      for (const b of buttons) b.disabled = flag;
+    },
+  };
+}
+
+function saveStatus() {
+  const el = h('span', { class: 'save-status', role: 'status' });
+  return {
+    el,
+    set(kind, text) {
+      el.className = `save-status ${kind ?? ''}`;
+      el.textContent = text ?? '';
+    },
+  };
+}
+
+function settingsCard(titleKey, iconName, desc, ...content) {
+  return h('article', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { class: 'card-title' }, icon(iconName), t(titleKey))), desc ? h('p', { class: 'card-desc' }, desc) : null, content);
+}
+
+function confirmDialog(title, text, okLabel) {
+  const dialog = $('confirm-dialog');
+  $('confirm-title').textContent = title;
+  $('confirm-text').textContent = text;
+  $('confirm-ok').textContent = okLabel;
+  $('confirm-cancel').textContent = t('set.cancel');
+  dialog.returnValue = '';
+  dialog.showModal();
+  $('confirm-cancel').focus();
+  return new Promise((resolve) => dialog.addEventListener('close', () => resolve(dialog.returnValue === 'ok'), { once: true }));
+}
+
+// --- Root yardımcısına istek ve sonucunu bekleme ---
+
+const systemBaseline = () => settingsState?.system?.updated ?? 0;
+
+async function sendSystem(pathname, body, status, kind, pendingText) {
+  status.set('', pendingText);
+  const res = await api(pathname, body);
+  if (!res.ok) return status.set('err', t('set.saveFailed'));
+  pendingRequests.push({ baseline: systemBaseline(), sentAt: Date.now(), status, kind });
+  scheduleSettingsPoll(1500);
+}
+
+const saveSystem = (body, status, card) => sendSystem('/api/system', body, status, { type: 'settings', card }, t('set.applying'));
+const runAction = (action, status, text) => sendSystem('/api/actions', { action }, status, { type: 'action', action }, text);
+
+function historyMatches(entry, kind) {
+  return kind.type === 'settings' ? entry.type === 'settings' || entry.type === 'rejected' : entry.type === 'action' && entry.action === kind.action;
+}
+
+const errorText = (code) => (code ? (I18N.DICT[I18N.lang][`hist.err.${code}`] ? t(`hist.err.${code}`) : code) : '');
+
+function resolvePending(sys) {
+  pendingRequests = pendingRequests.filter((p) => {
+    if (p.kind.action === 'update' && sys.running?.action === 'update') {
+      p.status.set('', t('set.updRunning', { ago: fmtAgo(sys.running.startedAt) }));
+      return true;
+    }
+    if (p.kind.action === 'reboot') {
+      p.status.set('', t('set.rebooting'));
+      return true;
+    }
+    if ((sys.updated ?? 0) > p.baseline) {
+      const entry = (sys.history ?? []).find((e) => e.time > p.baseline && historyMatches(e, p.kind));
+      if (entry?.ok === false) p.status.set('err', t('set.applyFailed', { reason: errorText(entry.message) }));
+      else p.status.set('ok', p.kind.action === 'refresh' ? t('set.checked') : t('set.applied'));
+      if (p.kind.card) settingsCards[p.kind.card]?.sync(sys);
+      return false;
+    }
+    // Yardımcı iki dakika içinde işlemediyse (path birimi kurulu değil ya da durmuş) haber ver.
+    if (Date.now() - p.sentAt > 120_000) {
+      p.status.set('err', t('set.helperNoResponse'));
+      return false;
+    }
+    return true;
+  });
+}
+
+// --- Kartlar ---
+
+function buildGeneralCard() {
+  const status = saveStatus();
+  const lang = segEl(
+    [
+      ['tr', 'Türkçe'],
+      ['en', 'English'],
+    ],
+    settingsState.panel.language,
+    async (v) => {
+      status.set('', t('set.saving'));
+      const res = await api('/api/settings', { language: v });
+      if (res.ok) window.location.reload();
+      else status.set('err', t('set.saveFailed'));
+    },
+  );
+  let stored = null;
+  try {
+    stored = localStorage.getItem(THEME_KEY);
+  } catch {
+    /* depolama kapalı */
+  }
+  const theme = segEl(
+    [
+      ['system', t('set.themeSystem')],
+      ['light', t('set.themeLight')],
+      ['dark', t('set.themeDark')],
+    ],
+    stored ?? 'system',
+    (v) => {
+      applyTheme(v === 'system' ? null : v);
+      try {
+        if (v === 'system') localStorage.removeItem(THEME_KEY);
+        else localStorage.setItem(THEME_KEY, v);
+      } catch {
+        /* tercih bu oturumla sınırlı kalır */
+      }
+      redrawCharts();
+    },
+  );
+  return settingsCard('set.general', 'gear', null, h('div', { class: 'form-rows' }, formRow(t('set.language'), [lang.el, status.el], t('set.languageHint')), formRow(t('set.theme'), theme.el, t('set.themeHint'))));
+}
+
+function buildPanelCard() {
+  const p = settingsState.panel;
+  const interval = selectEl(INTERVAL_CHOICES.map((v) => [v, t('set.seconds', { n: v })]), p.intervalSeconds);
+  const history = selectEl(HISTORY_CHOICES.map((v) => [v, t('set.minutes', { n: v })]), p.historyMinutes);
+  const inputs = {};
+  const thresholdRow = (key, label, unit, max) => {
+    const [warn, crit] = p.thresholds[key];
+    inputs[key] = [inputEl('number', warn, { class: 'num', min: 1, max }), inputEl('number', crit, { class: 'num', min: 1, max })];
+    return formRow(label, [h('span', { class: 'pair' }, t('set.warnAt'), inputs[key][0], unit), h('span', { class: 'pair' }, t('set.critAt'), inputs[key][1], unit)]);
+  };
+  const textarea = (lines) => {
+    const el = h('textarea', { class: 'textarea', rows: '3', spellcheck: 'false' });
+    el.value = lines.join('\n');
+    return el;
+  };
+  const hideDisks = textarea(p.hideDisks);
+  const hideIfaces = textarea(p.hideInterfaces);
+  const status = saveStatus();
+  const lines = (el) => el.value.split('\n').map((x) => x.trim()).filter(Boolean);
+  const save = button(t('set.save'), 'accent', async () => {
+    const thresholds = Object.fromEntries(Object.entries(inputs).map(([k, [w, c]]) => [k, [Number(w.value), Number(c.value)]]));
+    if (Object.values(thresholds).some(([w, c]) => !(Number.isInteger(w) && Number.isInteger(c) && w >= 1 && w < c))) return status.set('err', t('set.thresholdOrder'));
+    status.set('', t('set.saving'));
+    const res = await api('/api/settings', {
+      intervalSeconds: Number(interval.value),
+      historyMinutes: Number(history.value),
+      thresholds,
+      hideDisks: lines(hideDisks),
+      hideInterfaces: lines(hideIfaces),
+    });
+    status.set(res.ok ? 'ok' : 'err', res.ok ? t('set.saved') : t('set.saveFailed'));
+    if (res.ok) settingsState.panel = res.data.panel;
+  });
+  return settingsCard(
+    'set.panel',
+    'sliders',
+    t('set.panelDesc'),
+    h(
+      'div',
+      { class: 'form-rows' },
+      formRow(t('set.interval'), interval),
+      formRow(t('set.history'), history, t('set.historyHint')),
+      thresholdRow('cpu', t('set.thCpu'), '%', 100),
+      thresholdRow('memory', t('set.thMemory'), '%', 100),
+      thresholdRow('disk', t('set.thDisk'), '%', 100),
+      thresholdRow('temperature', t('set.thTemp'), '°C', 150),
+      formRow(t('set.hideDisks'), hideDisks, t('set.patternHint')),
+      formRow(t('set.hideIfaces'), hideIfaces, t('set.patternHint')),
+    ),
+    h('div', { class: 'form-actions' }, save, status.el),
+  );
+}
+
+function buildServicesCard() {
+  const selected = new Set(settingsState.panel.services);
+  const search = inputEl('search', null, { class: 'wide', placeholder: t('set.svcSearch'), 'aria-label': t('set.svcSearch') });
+  const list = h('div', { class: 'svc-options' }, placeholder(t('common.loading')));
+  const count = h('span', { class: 'muted small' });
+  const status = saveStatus();
+  let units = [];
+  const renderList = () => {
+    const q = search.value.trim().toLowerCase();
+    // Seçili servisler listenin başında durur.
+    const shown = units
+      .filter((u) => !q || u.name.toLowerCase().includes(q))
+      .sort((a, b) => Number(selected.has(b.name)) - Number(selected.has(a.name)) || a.name.localeCompare(b.name));
+    fill(
+      list,
+      shown.length
+        ? shown.map((u) => {
+            const box = h('input', { type: 'checkbox' });
+            box.checked = selected.has(u.name);
+            box.addEventListener('change', () => {
+              if (box.checked) selected.add(u.name);
+              else selected.delete(u.name);
+              count.textContent = t('set.svcSelected', { n: selected.size });
+            });
+            return h('label', { class: 'svc-option' }, box, h('span', { title: u.name }, u.name), h('small', null, u.state));
+          })
+        : placeholder(t('set.svcNone')),
+    );
+    count.textContent = t('set.svcSelected', { n: selected.size });
+  };
+  search.addEventListener('input', renderList);
+  api('/api/services/available').then((res) => {
+    if (!res.ok) return fill(list, errorBox(t('set.svcLoadFailed')));
+    units = res.data.units;
+    for (const name of selected) if (!units.some((u) => u.name === name)) units.push({ name, state: '—' });
+    renderList();
+  });
+  const save = button(t('set.save'), 'accent', async () => {
+    status.set('', t('set.saving'));
+    const res = await api('/api/settings', { services: [...selected] });
+    status.set(res.ok ? 'ok' : 'err', res.ok ? t('set.saved') : t('set.saveFailed'));
+  });
+  const card = settingsCard('set.services', 'server', t('set.servicesDesc'), h('div', { class: 'svc-picker' }, search, list, count), h('div', { class: 'form-actions' }, save, status.el));
+  return card;
+}
+
+function helperNotice(sys) {
+  if (!sys.available) return h('p', { class: 'notice' }, icon('error'), h('span', null, t('set.helperMissing')));
+  return null;
+}
+
+function buildUpdatesCard() {
+  const box = h('div', { class: 'status-box' });
+  const mode = segEl(
+    [
+      ['off', t('set.updOff')],
+      ['security', t('set.updSecurity')],
+      ['all', t('set.updAll')],
+    ],
+    'security',
+  );
+  const reboot = switchEl(false, t('set.rebootIfNeeded'));
+  const rebootTime = inputEl('time', '04:00', { step: 60 });
+  const status = saveStatus();
+  const log = h('pre', { class: 'log', hidden: true });
+  const save = button(t('set.save'), 'accent', () => saveSystem({ updates: mode.value, rebootAfterUpdate: reboot.input.checked, rebootTime: rebootTime.value }, status, 'updates'));
+  const check = button(t('set.checkUpdates'), null, () => runAction('refresh', status, t('set.checking')));
+  const actionStatus = saveStatus();
+  const updateNow = button(t('set.updateNow'), 'danger', async () => {
+    if (await confirmDialog(t('set.updateConfirmTitle'), t('set.updateConfirmText'), t('set.updateNow'))) runAction('update', actionStatus, t('set.updateStarted'));
+  });
+  let autoSupported = false;
+  reboot.onChange((on) => {
+    rebootTime.disabled = !autoSupported || !on;
+  });
+  settingsCards.updates = {
+    sync(sys) {
+      const s = sys.settings ?? {};
+      if (s.updates) mode.set(s.updates);
+      if (s.rebootTime) rebootTime.value = s.rebootTime;
+      reboot.set(s.rebootAfterUpdate);
+    },
+    update(sys) {
+      const pm = sys.platform?.packageManager;
+      const auto = sys.available && sys.platform?.autoUpdates;
+      autoSupported = Boolean(auto);
+      mode.disable(!auto);
+      reboot.input.disabled = save.disabled = !auto;
+      rebootTime.disabled = !auto || !reboot.input.checked;
+      const running = sys.running?.action === 'update';
+      check.disabled = updateNow.disabled = !(sys.available && sys.platform?.updateNow) || running;
+      const u = sys.updates;
+      fill(
+        box,
+        helperNotice(sys),
+        sys.available && !pm ? h('div', { class: 'row' }, t('set.pmUnsupported')) : null,
+        sys.available && pm && !auto ? h('div', { class: 'row muted' }, t('set.autoUnsupported', { pm })) : null,
+        sys.available && pm
+          ? h(
+              'div',
+              { class: 'row' },
+              u?.pending == null ? t('set.updUnknown') : u.pending === 0 ? [tag('ok', 'ok', t('set.updNone'))] : [tag('warn', 'warn', t('set.updPending', { n: u.pending })), u.security ? h('span', null, t('set.updSecurityCount', { n: u.security })) : null],
+              u?.rebootRequired ? tag('warn', 'warn', t('set.rebootRequired')) : null,
+            )
+          : null,
+        u?.rebootRequired && u.rebootPackages?.length ? h('div', { class: 'row muted small' }, t('set.rebootPackages', { list: u.rebootPackages.slice(0, 6).join(', ') })) : null,
+        u?.lastAutoRun ? h('div', { class: 'row muted small' }, t('set.lastAutoRun', { ago: fmtAgo(u.lastAutoRun) })) : null,
+        running ? h('div', { class: 'row' }, tag('info', 'clock', t('set.updRunning', { ago: fmtAgo(sys.running.startedAt) }))) : null,
+      );
+      const lastUpdate = (sys.history ?? []).find((e) => e.type === 'action' && e.action === 'update');
+      log.hidden = !(running || (lastUpdate && Date.now() - lastUpdate.time < 3600_000)) || !sys.updateLog;
+      log.textContent = sys.updateLog ?? '';
+      if (running) log.scrollTop = log.scrollHeight;
+    },
+  };
+  return settingsCard(
+    'set.updates',
+    'download',
+    null,
+    box,
+    h('div', { class: 'form-rows' }, formRow(t('set.autoUpdates'), mode.el, t('set.autoUpdatesHint')), formRow(t('set.rebootAfter'), [reboot.el, rebootTime], t('set.rebootAfterHint'))),
+    h('div', { class: 'form-actions' }, save, check, status.el),
+    actionBlock(t('set.updateNow'), t('set.updateNowDesc'), updateNow, actionStatus),
+    log,
+  );
+}
+
+function buildRebootCard() {
+  const box = h('div', { class: 'status-box' });
+  const enabled = switchEl(false, null, t('set.scheduledRebootLabel'));
+  const day = selectEl([['daily', t('day.daily')], ...WEEKDAYS.map((d) => [d, t(`day.${d}`)])], 'sun');
+  const time = inputEl('time', '04:00', { step: 60 });
+  const status = saveStatus();
+  const actionStatus = saveStatus();
+  let available = false;
+  enabled.onChange((on) => {
+    day.disabled = time.disabled = !available || !on;
+  });
+  const save = button(t('set.save'), 'accent', () => saveSystem({ scheduledReboot: { enabled: enabled.input.checked, day: day.value, time: time.value } }, status, 'reboot'));
+  const rebootNow = button(t('set.rebootNow'), 'danger', async () => {
+    if (await confirmDialog(t('set.rebootConfirmTitle', { host: hostName ?? '' }), t('set.rebootConfirmText'), t('set.rebootNow'))) runAction('reboot', actionStatus, t('set.rebootRequested'));
+  });
+  settingsCards.reboot = {
+    sync(sys) {
+      const r = sys.settings?.scheduledReboot;
+      if (!r) return;
+      day.value = r.day;
+      time.value = r.time;
+      enabled.set(r.enabled);
+    },
+    update(sys) {
+      available = Boolean(sys.available);
+      enabled.input.disabled = save.disabled = rebootNow.disabled = !available;
+      day.disabled = time.disabled = !available || !enabled.input.checked;
+      const r = sys.settings?.scheduledReboot;
+      fill(
+        box,
+        helperNotice(sys),
+        sys.available && r ? h('div', { class: 'row' }, r.enabled ? tag('info', 'clock', t('set.rebootScheduled', { day: t(`day.${r.day}`), time: r.time })) : t('set.rebootOff')) : null,
+        sys.updates?.rebootRequired ? h('div', { class: 'row' }, tag('warn', 'warn', t('set.rebootRequired'))) : null,
+      );
+    },
+  };
+  return settingsCard(
+    'set.reboot',
+    'power',
+    null,
+    box,
+    h('div', { class: 'form-rows' }, formRow(t('set.scheduledRebootLabel'), enabled.el), formRow(t('set.when'), [day, time], t('set.rebootHint'))),
+    h('div', { class: 'form-actions' }, save, status.el),
+    actionBlock(t('set.rebootNow'), t('set.rebootNowDesc'), rebootNow, actionStatus),
+  );
+}
+
+function buildSmartTestsCard() {
+  const box = h('div', { class: 'status-box' });
+  const enabled = switchEl(false, null, t('set.smartEnabled'));
+  const shortDay = selectEl(WEEKDAYS.map((d) => [d, t(`day.${d}`)]), 'sun');
+  const longDay = selectEl(Array.from({ length: 28 }, (_, i) => [i + 1, t('set.dayOfMonth', { n: i + 1 })]), 1);
+  const time = inputEl('time', '03:00', { step: 60 });
+  const status = saveStatus();
+  const save = button(t('set.save'), 'accent', () =>
+    saveSystem({ smartTests: { enabled: enabled.input.checked, shortDay: shortDay.value, longDay: Number(longDay.value), time: time.value } }, status, 'smart'),
+  );
+  let supported = false;
+  enabled.onChange((on) => {
+    shortDay.disabled = longDay.disabled = time.disabled = !supported || !on;
+  });
+  settingsCards.smart = {
+    sync(sys) {
+      const s = sys.settings?.smartTests;
+      if (!s) return;
+      shortDay.value = s.shortDay;
+      longDay.value = String(s.longDay);
+      time.value = s.time;
+      enabled.set(s.enabled);
+    },
+    update(sys) {
+      const ok = sys.available && sys.platform?.smartTests;
+      supported = Boolean(ok);
+      enabled.input.disabled = save.disabled = !ok;
+      shortDay.disabled = longDay.disabled = time.disabled = !ok || !enabled.input.checked;
+      fill(box, helperNotice(sys), sys.available && !sys.platform?.smartTests ? h('div', { class: 'row' }, t('set.smartctlMissing')) : null, h('div', { class: 'row muted small' }, t('set.smartHint')));
+    },
+  };
+  return settingsCard(
+    'set.smartTitle',
+    'disk',
+    null,
+    box,
+    h('div', { class: 'form-rows' }, formRow(t('set.smartEnabled'), enabled.el), formRow(t('set.shortTest'), shortDay, t('set.shortHint')), formRow(t('set.longTest'), longDay, t('set.longHint')), formRow(t('set.testTime'), time)),
+    h('div', { class: 'form-actions' }, save, status.el),
+  );
+}
+
+function buildPasswordCard() {
+  const current = inputEl('password', '', { class: 'wide', autocomplete: 'current-password' });
+  const next = inputEl('password', '', { class: 'wide', autocomplete: 'new-password', minlength: 8 });
+  const repeat = inputEl('password', '', { class: 'wide', autocomplete: 'new-password', minlength: 8 });
+  const status = saveStatus();
+  const change = button(t('set.pwChange'), 'accent', async () => {
+    if (next.value.length < 8) return status.set('err', t('set.pwWeak'));
+    if (next.value !== repeat.value) return status.set('err', t('set.pwMismatch'));
+    status.set('', t('set.saving'));
+    const res = await api('/api/password', { current: current.value, next: next.value });
+    current.value = next.value = repeat.value = '';
+    if (res.ok) return status.set('ok', t('set.pwChanged'));
+    if (res.status === 429) return status.set('err', t('set.pwLocked'));
+    if (res.data.code === 'bad_password') return status.set('err', t('set.pwWrong'));
+    return status.set('err', res.data.code === 'weak_password' ? t('set.pwWeak') : t('set.saveFailed'));
+  });
+  return settingsCard(
+    'set.security',
+    'key',
+    t('set.securityDesc'),
+    h('div', { class: 'form-rows' }, formRow(t('set.pwCurrent'), current), formRow(t('set.pwNew'), next, t('set.pwHint')), formRow(t('set.pwRepeat'), repeat)),
+    h('div', { class: 'form-actions' }, change, status.el),
+  );
+}
+
+function historyText(e) {
+  const reason = errorText(e.message);
+  if (e.type === 'settings') {
+    return e.ok ? t('hist.settingsOk', { what: (e.changes ?? []).map((c) => t(`hist.change.${c}`)).join(', ') }) : t('hist.settingsFail', { reason });
+  }
+  if (e.type === 'rejected') return t('hist.rejected');
+  if (e.type === 'smart-test') return t('hist.smartTest', { kind: t(`hist.test.${e.action}`), n: e.devices?.length ?? 0 });
+  if (e.action === 'update') return e.ok ? t('hist.updateOk') : t('hist.updateFail', { reason });
+  if (e.action === 'refresh') return t('hist.refresh');
+  if (e.action === 'reboot') return t('hist.reboot');
+  return e.type;
+}
+
+function buildHistoryCard() {
+  const list = h('ul', { class: 'history' });
+  settingsCards.history = {
+    sync() {},
+    update(sys) {
+      const items = sys.history ?? [];
+      fill(
+        list,
+        items.length
+          ? items.map((e) => h('li', { class: e.ok === false ? 'fail' : 'ok' }, icon(e.ok === false ? 'crit' : 'ok'), h('span', null, historyText(e)), h('time', null, dateTimeFormat.format(new Date(e.time)))))
+          : h('li', { class: 'muted' }, t('set.historyEmpty')),
+      );
+    },
+  };
+  const card = settingsCard('set.historyTitle', 'list', t('set.historyDesc'), list);
+  return card;
+}
+
+// Yalnızca https bağlantıları tıklanabilir yapılır; yeni sekme açılan sayfaya erişemez.
+function externalLink(url) {
+  if (typeof url !== 'string' || !url.startsWith('https://')) return h('span', null, '—');
+  return h('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, url.replace(/^https:\/\//, ''));
+}
+
+function buildAboutCard() {
+  const about = settingsState.about ?? {};
+  const author = about.author ?? {};
+  return settingsCard(
+    'set.about',
+    'info',
+    t('set.aboutDesc'),
+    h(
+      'div',
+      { class: 'form-rows' },
+      formRow(t('set.aboutVersion'), h('span', null, about.version ?? '—')),
+      formRow(t('set.aboutDeveloper'), h('span', null, author.name ?? '—')),
+      formRow('GitHub', externalLink(author.url)),
+      formRow(t('set.aboutSource'), externalLink(about.homepage)),
+      formRow(t('set.aboutLicense'), h('span', null, about.license ? about.license.replaceAll('-', ' ') : '—'), t('set.aboutLicenseHint')),
+    ),
+  );
+}
+
+// Ayarlar bölümleri: [adres, başlık, simge, kartı kuran fonksiyon]
+const SETTINGS_SECTIONS = [
+  ['genel', 'set.general', 'gear', buildGeneralCard],
+  ['panel', 'set.panel', 'sliders', buildPanelCard],
+  ['servisler', 'set.services', 'server', buildServicesCard],
+  ['guncellemeler', 'set.updates', 'download', buildUpdatesCard],
+  ['yeniden-baslatma', 'set.reboot', 'power', buildRebootCard],
+  ['disk-testleri', 'set.smartTitle', 'disk', buildSmartTestsCard],
+  ['guvenlik', 'set.security', 'key', buildPasswordCard],
+  ['gecmis', 'set.historyTitle', 'list', buildHistoryCard],
+  ['hakkinda', 'set.about', 'info', buildAboutCard],
+];
+
+function currentSettingsSection() {
+  const sub = window.location.hash.replace(/^#\/?/, '').split('/')[1];
+  return SETTINGS_SECTIONS.some(([id]) => id === sub) ? sub : 'genel';
+}
+
+function showSettingsSection() {
+  if (!settingsBuilt) return;
+  const active = currentSettingsSection();
+  for (const el of $('settings-root').querySelectorAll('[data-section]')) {
+    if (el.tagName === 'BUTTON') el.setAttribute('aria-current', String(el.dataset.section === active));
+    else el.hidden = el.dataset.section !== active;
+  }
+  // Telefonda menü yatay kayar; seçili bölüm görünür kalsın.
+  const nav = $('settings-root').querySelector('.settings-nav');
+  const button = nav?.querySelector('[aria-current="true"]');
+  if (button && nav.scrollWidth > nav.clientWidth) {
+    const offset = button.getBoundingClientRect().left - nav.getBoundingClientRect().left;
+    nav.scrollTo({ left: nav.scrollLeft + offset - (nav.clientWidth - button.offsetWidth) / 2 });
+  }
+}
+
+function setSettingsBadge(section, kind, text) {
+  const badge = document.querySelector(`[data-settings-badge="${section}"]`);
+  if (!badge) return;
+  badge.hidden = !text;
+  badge.className = `nav-badge ${kind ?? ''}`;
+  badge.textContent = text ?? '';
+}
+
+function buildSettings() {
+  const nav = h('nav', { class: 'settings-nav', 'aria-label': t('nav.settings') });
+  const content = h('div', { class: 'settings-content' });
+  for (const [id, titleKey, iconName, build] of SETTINGS_SECTIONS) {
+    const card = build();
+    card.dataset.section = id;
+    content.append(card);
+    const link = h('button', { type: 'button', 'data-section': id }, icon(iconName), h('span', null, t(titleKey)), h('span', { class: 'nav-badge', 'data-settings-badge': id, hidden: true }));
+    link.addEventListener('click', () => {
+      window.location.hash = `#/ayarlar/${id}`;
+    });
+    nav.append(link);
+  }
+  fill($('settings-root'), nav, content);
+  for (const card of Object.values(settingsCards)) card.sync(settingsState.system);
+  settingsBuilt = true;
+  showSettingsSection();
+}
+
+async function loadSettings() {
+  try {
+    const res = await api('/api/settings');
+    if (!res.ok) return;
+    settingsState = res.data;
+    if (!settingsBuilt) buildSettings();
+    resolvePending(settingsState.system);
+    for (const card of Object.values(settingsCards)) card.update(settingsState.system);
+    const sys = settingsState.system;
+    const pending = sys.updates?.pending;
+    setSettingsBadge('guncellemeler', sys.available ? 'warn' : 'crit', !sys.available ? '!' : pending ? String(pending) : null);
+    setSettingsBadge('yeniden-baslatma', 'warn', sys.updates?.rebootRequired ? '!' : null);
+  } catch {
+    /* bağlantı sorunu; ana durum göstergesi zaten bildiriyor */
+  } finally {
+    scheduleSettingsPoll(pendingRequests.length || settingsState?.system?.running ? 2000 : 10_000);
+  }
+}
+
+function scheduleSettingsPoll(delay) {
+  clearTimeout(settingsTimer);
+  if (currentRoute() === 'ayarlar' && !document.hidden) settingsTimer = setTimeout(loadSettings, delay);
+}
+
+function enterSettings() {
+  showSettingsSection();
+  loadSettings();
+}
+
+function leaveSettings() {
+  clearTimeout(settingsTimer);
+}
+
+// ---------- Güncelleme döngüsü ----------
+
+// Sayfa http://kullanici:sifre@sunucu/ biçiminde açıldıysa göreli adresler kimlik bilgisini taşır
+// ve fetch bunları reddeder; origin kimlik bilgisi içermez.
+const STATS_URL = new URL('/api/stats', window.location.origin);
+
+let intervalMs = 3000;
+let lastOk = 0;
+let pollTimer = null;
+let polling = false;
+
+function setStatus(state, text) {
+  $('status').className = `live ${state}`;
+  $('status-text').textContent = text;
+  $('side-pulse').className = `pulse ${state}`;
+}
+
+async function poll() {
+  if (polling) return;
+  polling = true;
+  clearTimeout(pollTimer);
+  const abort = new AbortController();
+  const timeout = setTimeout(() => abort.abort(), 10_000);
+  try {
+    const res = await fetch(STATS_URL, { cache: 'no-store', signal: abort.signal });
+    if (res.status === 401) {
+      window.location.replace(`/login${window.location.hash}`); // oturum süresi doldu ya da servis yeniden başladı
+      return;
+    }
+    if (!res.ok) throw new Error(res.status === 429 ? t('status.tooMany') : `HTTP ${res.status}`);
+    const data = await res.json();
+    intervalMs = Math.max(1, data.intervalSeconds || 3) * 1000;
+    lastOk = Date.now();
+    render(data);
+    setStatus('ok', t('status.live', { time: timeFormat.format(new Date(data.snapshot?.time ?? Date.now())) }));
+  } catch (err) {
+    const message = err.name === 'AbortError' ? t('status.noResponse') : t('status.connError');
+    setStatus(Date.now() - lastOk > intervalMs * 3 ? 'error' : 'warn', message);
+  } finally {
+    clearTimeout(timeout);
+    polling = false;
+  }
+  if (!document.hidden) pollTimer = setTimeout(poll, intervalMs);
+}
+
+// Sekme arka plandayken sunucuya istek atılmaz.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    clearTimeout(pollTimer);
+    leaveSettings();
+  } else {
+    poll();
+    if (currentRoute() === 'ayarlar') enterSettings();
+  }
+});
+
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(redrawCharts, 100);
+});
+
+for (const button of document.querySelectorAll('#proc-sort button')) {
+  button.addEventListener('click', () => {
+    procSort = button.dataset.sort;
+    for (const b of document.querySelectorAll('#proc-sort button')) b.setAttribute('aria-pressed', String(b === button));
+    if (lastData?.snapshot?.processes) safely(renderProcesses, lastData.snapshot.processes);
+  });
+}
+
+// ---------- Bölümler ve sol menü ----------
+
+const ROUTES = {
+  genel: t('nav.overview'),
+  'ekran-karti': t('nav.gpu'),
+  depolama: t('nav.storage'),
+  ag: t('nav.network'),
+  donanim: t('nav.hardware'),
+  surecler: t('nav.processes'),
+  servisler: t('nav.services'),
+  ayarlar: t('nav.settings'),
+};
+let hostName = null;
+
+function currentRoute() {
+  const route = window.location.hash.replace(/^#\/?/, '').split('/')[0];
+  return Object.hasOwn(ROUTES, route) ? route : 'genel';
+}
+
+function updateTitle() {
+  const page = ROUTES[currentRoute()];
+  document.title = hostName ? `${page} · ${hostName}` : `${page} · ${t('app.name')}`;
+}
+
+const sidebar = $('sidebar');
+const backdrop = $('sidebar-backdrop');
+const menuToggle = $('menu-toggle');
+
+function setSidebar(open) {
+  sidebar.classList.toggle('open', open);
+  backdrop.hidden = !open;
+  menuToggle.setAttribute('aria-expanded', String(open));
+  menuToggle.setAttribute('aria-label', t(open ? 'menu.close' : 'menu.open'));
+}
+
+function applyRoute() {
+  const route = currentRoute();
+  document.body.dataset.route = route;
+  $('page-title').textContent = ROUTES[route];
+  for (const link of document.querySelectorAll('.nav-item')) {
+    if (link.dataset.route === route) link.setAttribute('aria-current', 'page');
+    else link.removeAttribute('aria-current');
+  }
+  updateTitle();
+  setSidebar(false);
+  if (route === 'ayarlar') enterSettings();
+  else leaveSettings();
+  window.scrollTo(0, 0);
+  // Gizliyken genişliği sıfır olan grafikler görünür olunca yeniden çizilir.
+  requestAnimationFrame(redrawCharts);
+}
+
+window.addEventListener('hashchange', applyRoute);
+menuToggle.addEventListener('click', () => setSidebar(!sidebar.classList.contains('open')));
+backdrop.addEventListener('click', () => setSidebar(false));
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && sidebar.classList.contains('open')) {
+    setSidebar(false);
+    menuToggle.focus();
+  }
+});
+applyRoute();
+
+// ---------- Kullanıcı menüsü ----------
+
+const userButton = $('user-button');
+const dropdown = $('user-dropdown');
+
+function toggleMenu(open) {
+  dropdown.hidden = !open;
+  userButton.setAttribute('aria-expanded', String(open));
+  if (open) $('logout').focus();
+}
+
+userButton.addEventListener('click', () => toggleMenu(dropdown.hidden));
+document.addEventListener('click', (event) => {
+  if (!dropdown.hidden && !event.target.closest('.user-menu')) toggleMenu(false);
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !dropdown.hidden) {
+    toggleMenu(false);
+    userButton.focus();
+  }
+});
+
+$('logout').addEventListener('click', async () => {
+  try {
+    await fetch(new URL('/logout', window.location.origin), { method: 'POST' });
+  } catch {
+    /* sunucuya ulaşılamasa da giriş ekranına dönülür */
+  }
+  window.location.replace('/login');
+});
+
+// ---------- Tema ----------
+
+const THEME_KEY = 'serverhealth-theme';
+const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+
+function applyTheme(theme) {
+  if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+  else delete document.documentElement.dataset.theme;
+}
+
+try {
+  applyTheme(localStorage.getItem(THEME_KEY));
+} catch {
+  /* depolama kapalıysa sistem teması kullanılır */
+}
+
+$('theme-toggle').addEventListener('click', () => {
+  const current = document.documentElement.dataset.theme ?? (darkQuery.matches ? 'dark' : 'light');
+  const next = current === 'dark' ? 'light' : 'dark';
+  applyTheme(next);
+  try {
+    localStorage.setItem(THEME_KEY, next);
+  } catch {
+    /* tercih bu oturumla sınırlı kalır */
+  }
+  redrawCharts();
+});
+darkQuery.addEventListener('change', redrawCharts);
+
+poll();

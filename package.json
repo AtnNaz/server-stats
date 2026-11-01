@@ -1,0 +1,29 @@
+{
+  "name": "server-stats",
+  "version": "1.0.0",
+  "description": "Linux sunucular için şifre korumalı, canlı güncellenen sağlık paneli",
+  "author": {
+    "name": "Ali Toprak Naz",
+    "url": "https://github.com/AtnNaz"
+  },
+  "homepage": "https://github.com/AtnNaz/server-stats",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AtnNaz/server-stats.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AtnNaz/server-stats/issues"
+  },
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "type": "module",
+  "private": true,
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test",
+    "hash-password": "node bin/hash-password.js"
+  },
+  "engines": {
+    "node": ">=18.15"
+  }
+}

@@ -1,0 +1,10 @@
+[Unit]
+Description=Sunucu Durumu - SMART bilgisini 10 dakikada bir topla
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=10min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

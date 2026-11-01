@@ -1,0 +1,9 @@
+[Unit]
+Description=Sunucu Durumu - panel isteklerini izle
+
+[Path]
+DirectoryNotEmpty=/var/lib/serverhealth-panel/queue
+Unit=serverhealth-helper.service
+
+[Install]
+WantedBy=paths.target

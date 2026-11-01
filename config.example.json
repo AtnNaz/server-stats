@@ -1,0 +1,33 @@
+{
+  "host": "0.0.0.0",
+  "port": 8080,
+  "intervalSeconds": 3,
+  "historyMinutes": 10,
+  "trustProxy": false,
+  "auth": {
+    "username": "admin",
+    "passwordHash": ""
+  },
+  "tls": {
+    "cert": "",
+    "key": ""
+  },
+  "services": [],
+  "docker": {
+    "enabled": false,
+    "socket": "/var/run/docker.sock"
+  },
+  "gpu": {
+    "enabled": true
+  },
+  "processes": {
+    "top": 10,
+    "showCommandLine": true
+  },
+  "network": {
+    "hideInterfaces": ["lo", "veth*", "br-*", "docker*", "virbr*"]
+  },
+  "disks": {
+    "hide": ["/boot", "/boot/efi", "/efi"]
+  }
+}

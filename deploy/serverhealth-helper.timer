@@ -1,0 +1,10 @@
+[Unit]
+Description=Sunucu Durumu - sistem durumunu (bekleyen güncellemeler vb.) saatte bir yenile
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1h
+AccuracySec=5min
+
+[Install]
+WantedBy=timers.target

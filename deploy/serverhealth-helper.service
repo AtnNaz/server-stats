@@ -1,0 +1,16 @@
+[Unit]
+Description=Sunucu Durumu - sistem ayarları yardımcısı (root)
+Documentation=file:///opt/serverhealth/README.md
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Panelin kuyruğa bıraktığı istekleri doğrulayıp uygular: otomatik güncelleme ayarı, planlı yeniden
+# başlatma, SMART test zamanlayıcıları, "şimdi güncelle" ve "şimdi yeniden başlat".
+# Paket kurabilmesi ve /etc altına yazabilmesi gerektiği için dosya sistemi kısıtlanmaz;
+# bunun yerine istekler izin verilen değerler listesine göre doğrulanır.
+ExecStart=@NODE@ /opt/serverhealth/bin/serverhealth-helper.js
+StateDirectory=serverhealth
+StateDirectoryMode=0755
+UMask=0022
+TimeoutStartSec=90min
