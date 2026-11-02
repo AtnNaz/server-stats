@@ -1,0 +1,35 @@
+[Unit]
+Description=Sunucu Durumu - günlük rapor (kayıtları yerel Ollama ile özetler)
+After=network.target ollama.service
+
+[Service]
+Type=oneshot
+ExecStart=@NODE@ /opt/serverhealth/bin/serverhealth-report.js --config /etc/serverhealth/config.json
+Nice=10
+TimeoutStartSec=15min
+# Raporlar /var/lib/serverhealth/reports altına root:serverhealth 0640 yazılır; panel okur.
+StateDirectory=serverhealth
+StateDirectoryMode=0755
+UMask=0027
+
+# Günlük kayıtlarını okumak için root çalışır; ağda yalnızca bu makineye (Ollama) bağlanabilir,
+# böylece kayıtlar başka bir yere gönderilemez.
+IPAddressAllow=localhost
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native

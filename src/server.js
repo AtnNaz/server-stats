@@ -3,7 +3,7 @@ import os from 'node:os';
 import http from 'node:http';
 import https from 'node:https';
 import { readFileSync } from 'node:fs';
-import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename, readdir } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -178,6 +178,38 @@ function main() {
     }
   }
 
+  // Günlük raporlar root yardımcısının servisi tarafından yazılır; panel yalnızca okur.
+  const REPORT_FILE = /^(\d{4}-\d{2}-\d{2})\.json$/;
+  async function listReports() {
+    const names = (await readdir(config.reports.dir).catch(() => [])).filter((n) => REPORT_FILE.test(n)).sort().reverse().slice(0, 60);
+    const items = await Promise.all(
+      names.map(async (name) => {
+        try {
+          const r = JSON.parse(await readFile(path.join(config.reports.dir, name), 'utf8'));
+          return { date: name.slice(0, 10), createdAt: r.createdAt ?? null, status: r.ai?.status ?? null, findings: r.ai?.findings?.length ?? 0, aiError: r.aiError ?? null };
+        } catch {
+          return null;
+        }
+      }),
+    );
+    return items.filter(Boolean);
+  }
+
+  async function ollamaModels() {
+    try {
+      const res = await fetch(new URL('/api/tags', config.ollama.url), { redirect: 'error', signal: AbortSignal.timeout(3000) });
+      if (!res.ok) return { available: false, models: [] };
+      const data = await res.json();
+      const models = (data.models ?? [])
+        .filter((m) => typeof m?.name === 'string')
+        .map((m) => ({ name: m.name, size: Number(m.size) || null, parameters: m.details?.parameter_size ?? null }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      return { available: true, models };
+    } catch {
+      return { available: false, models: [] };
+    }
+  }
+
   async function readSystemStatus() {
     try {
       return { available: true, ...JSON.parse(await readFile(config.system.statusFile, 'utf8')) };
@@ -329,6 +361,16 @@ function main() {
     if (pathname === '/api/settings') {
       return sendJson(req, res, 200, { user, panel: publicSettings(effective), system: await readSystemStatus(), about: { ...ABOUT, update: updates.status() } });
     }
+    if (pathname === '/api/reports') return sendJson(req, res, 200, { reports: await listReports() });
+    const reportMatch = /^\/api\/reports\/(\d{4}-\d{2}-\d{2})$/.exec(pathname);
+    if (reportMatch) {
+      try {
+        return send(req, res, 200, JSON_TYPE, await readFile(path.join(config.reports.dir, `${reportMatch[1]}.json`)));
+      } catch {
+        return sendJson(req, res, 404, { code: 'not_found' });
+      }
+    }
+    if (pathname === '/api/ollama/models') return sendJson(req, res, 200, await ollamaModels());
     if (pathname === '/api/services/available') {
       try {
         return sendJson(req, res, 200, { units: await listServiceUnits() });

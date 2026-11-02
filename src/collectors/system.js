@@ -105,15 +105,26 @@ async function readMounts() {
   }
 }
 
+// Yanıt vermeyen bir ağ diski (ör. kopmuş NFS) iş parçacığı havuzunu tüketmesin diye önceki
+// statfs çağrısı bitmeden aynı bağlama noktası tekrar sorgulanmaz. Zaman aşımını geçip askıda
+// kalan çağrılar en çok maxStuck olabilir (giriş doğrulaması da bu havuzu kullanır); normal,
+// hızlı biten çağrılar bu sınıra sayılmaz.
+export function createStatfsGuard({ statfsImpl = statfs, timeoutMs = 1500, maxStuck = 2, now = Date.now } = {}) {
+  const pending = new Map(); // bağlama noktası -> başlama zamanı
+  const stuck = () => [...pending.values()].filter((since) => now() - since > timeoutMs).length;
+  return function query(mount) {
+    if (pending.has(mount) || stuck() >= maxStuck) return Promise.reject(new Error(t('err.notResponding')));
+    pending.set(mount, now());
+    const request = statfsImpl(mount).finally(() => pending.delete(mount));
+    return withTimeout(request, timeoutMs, t('err.notResponding'));
+  };
+}
+
 export function createSystemCollector({ hide = [] } = {}) {
   const hidden = hide.length ? globMatcher(hide) : null;
   let prevCpu = null;
   let staticInfo = null;
-  // Yanıt vermeyen bir ağ diski (ör. kopmuş NFS) iş parçacığı havuzunu tüketmesin diye
-  // önceki statfs çağrısı bitmeden aynı bağlama noktası tekrar sorgulanmaz ve aynı anda
-  // en çok MAX_PENDING_STATFS çağrı askıda kalabilir (giriş doğrulaması da bu havuzu kullanır).
-  const pendingStatfs = new Set();
-  const MAX_PENDING_STATFS = 2;
+  const queryStatfs = createStatfsGuard();
 
   async function hostInfo() {
     if (!staticInfo) {
@@ -133,11 +144,8 @@ export function createSystemCollector({ hide = [] } = {}) {
 
   async function diskUsage(disk) {
     const base = { mount: disk.mount, source: disk.source, fstype: disk.fstype, readOnly: disk.readOnly, alsoMounted: disk.alsoMounted };
-    if (pendingStatfs.has(disk.mount) || pendingStatfs.size >= MAX_PENDING_STATFS) return { ...base, error: t('err.notResponding') };
-    pendingStatfs.add(disk.mount);
-    const request = statfs(disk.mount).finally(() => pendingStatfs.delete(disk.mount));
     try {
-      const s = await withTimeout(request, 1500, t('err.notResponding'));
+      const s = await queryStatfs(disk.mount);
       const total = s.blocks * s.bsize;
       const used = (s.blocks - s.bfree) * s.bsize;
       const available = s.bavail * s.bsize;

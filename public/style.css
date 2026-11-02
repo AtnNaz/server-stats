@@ -383,7 +383,8 @@ body[data-route="ag"] [data-pages]:not([data-pages~="ag"]),
 body[data-route="surecler"] [data-pages]:not([data-pages~="surecler"]),
 body[data-route="servisler"] [data-pages]:not([data-pages~="servisler"]),
 body[data-route="donanim"] [data-pages]:not([data-pages~="donanim"]),
-body[data-route="ayarlar"] [data-pages]:not([data-pages~="ayarlar"]) { display: none !important; }
+body[data-route="ayarlar"] [data-pages]:not([data-pages~="ayarlar"]),
+body[data-route="raporlar"] [data-pages]:not([data-pages~="raporlar"]) { display: none !important; }
 
 /* Bölüme özel genişlikler */
 body[data-route="depolama"] #disk-card,
@@ -815,3 +816,39 @@ td.cmd { max-width: 0; width: 100%; overflow: hidden; text-overflow: ellipsis; w
 .dialog h2 { margin: 0 0 8px; font-size: 17px; }
 .dialog p { margin: 0 0 20px; color: var(--ink-2); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; }
+
+/* Günlük raporlar: solda günler, sağda seçili rapor */
+.reports-root { display: grid; grid-template-columns: 220px minmax(0, 900px); gap: 28px; align-items: start; grid-column: 1 / -1; }
+.reports-root > .placeholder { grid-column: 1 / -1; }
+.report-days { position: sticky; top: 80px; display: grid; gap: 2px; }
+.report-days button { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border: 0; border-radius: 9px; background: transparent; color: var(--ink-2); font-weight: 550; text-align: left; cursor: pointer; }
+.report-days button:hover { background: var(--surface-2); color: var(--ink); }
+.report-days button[aria-current="true"] { background: var(--surface); color: var(--ink); box-shadow: inset 0 0 0 1px var(--border), var(--shadow); }
+.report-days .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+.report-days .dot.ok { background: var(--good); }
+.report-days .dot.warn { background: var(--warning); }
+.report-days .dot.crit { background: var(--critical); }
+.report-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 14px; }
+.report-head h2 { margin: 0; font-size: 18px; }
+.report-head .actions { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.report-summary { margin: 0 0 16px; font-size: 14px; line-height: 1.55; }
+.findings { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.findings li { padding: 12px 14px; border: 1px solid var(--border); border-radius: 11px; background: var(--surface-2); }
+.findings strong { display: block; margin: 6px 0 4px; }
+.findings p { margin: 4px 0 0; color: var(--ink-2); font-size: 13px; }
+.report-section { margin-top: 18px; }
+.report-section h3 { margin: 0 0 10px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.fact-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+.fact-tiles div { padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; }
+.fact-tiles b { display: block; font-size: 20px; }
+.fact-tiles span { color: var(--muted); font-size: 12px; }
+.report-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.report-table td, .report-table th { padding: 6px 8px; border-top: 1px solid var(--border); text-align: left; vertical-align: top; }
+.report-table th { color: var(--muted); font-weight: 550; border-top: 0; }
+.report-table td.num { text-align: right; white-space: nowrap; }
+.report-table td.sample { font-family: var(--mono, ui-monospace, monospace); font-size: 12px; overflow-wrap: anywhere; }
+@media (max-width: 960px) {
+  .reports-root { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .report-days { position: static; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+  .report-days button { flex: none; white-space: nowrap; }
+}

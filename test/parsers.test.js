@@ -233,3 +233,20 @@ test('kalıp eşleme geri izlemesizdir: çok yıldızlı kalıp uzun yolda takı
   assert.ok(!globMatcher(['/mnt/*/yedek*']).test('/mnt/disk1/diger'));
   assert.ok(globMatcher(['*']).test(''));
 });
+
+test('statfs koruması: aynı anda sorgulanan sağlam diskler "yanıt vermiyor" sayılmaz', async () => {
+  const { createStatfsGuard } = await import('../src/collectors/system.js');
+  const ok = { blocks: 100, bfree: 50, bavail: 50, bsize: 4096, files: 10, ffree: 5 };
+  const hung = new Set(['/mnt/nfs1', '/mnt/nfs2', '/mnt/nfs3']);
+  let clock = 0;
+  const query = createStatfsGuard({ statfsImpl: (m) => (hung.has(m) ? new Promise(() => {}) : new Promise((r) => setTimeout(() => r(ok), 5))), timeoutMs: 50, now: () => clock });
+  const mounts = ['/', '/a', '/b', '/c', '/d', '/e'];
+  const results = await Promise.allSettled(mounts.map(query));
+  assert.ok(results.every((r) => r.status === 'fulfilled'), 'altı sağlam disk birlikte sorgulanabilmeli');
+  // İki takılı disk sınırı doldurunca başka sorgu başlatılmaz; sağlam diskler de beklemez.
+  const stuck = ['/mnt/nfs1', '/mnt/nfs2'].map((m) => query(m).catch(() => 'zaman aşımı'));
+  clock = 100;
+  assert.equal(await stuck[0], 'zaman aşımı');
+  await assert.rejects(query('/mnt/nfs3'));
+  await assert.rejects(query('/'));
+});

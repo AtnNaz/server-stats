@@ -100,6 +100,8 @@ Ayarlar `/etc/serverhealth/config.json` dosyasındadır. Değişiklikten sonra `
 | `intervalSeconds` | `3` | Verilerin kaç saniyede bir toplanacağı (1–60) |
 | `historyMinutes` | `10` | Grafiklerde gösterilecek süre (dakika) |
 | `trustProxy` | `false` | Ters vekil (nginx) arkasındaysa `true`; kilitleme için istemci IP'si `X-Real-IP` başlığından alınır |
+| `ollama.url` | `"http://127.0.0.1:11434"` | Günlük rapor için Ollama adresi; yalnızca bu makine olabilir |
+| `reports.dir` | `"/var/lib/serverhealth/reports"` | Günlük raporların yazıldığı klasör |
 | `updateCheck` | `true` | İki günde bir GitHub'daki son sürüme bakar; yeni sürüm varsa Ayarlar → Hakkında'da gösterir |
 | `allowedHosts` | `[]` | Panelin kabul ettiği ek adlar (ör. `["durum.ornek.com"]`). Sunucunun kendi IP adresleri, makine adı ve `localhost` her zaman kabul edilir; başka adlarla gelen istekler (DNS rebinding) reddedilir. `["*"]` denetimi kapatır |
 | `auth.username` | `"admin"` | Panel kullanıcı adı |
@@ -138,6 +140,15 @@ curl -u admin:SIFRE http://SUNUCU_IP:8080/api/stats
 ```
 
 Oturum yoksa `/api/stats` 401 döndürür; sayfa istekleri ise giriş ekranına yönlendirilir. `/healthz` şifresizdir ve yalnızca `ok` döndürür.
+
+## Günlük rapor (Ollama)
+
+Sunucuda [Ollama](https://ollama.com) kuruluysa panel her gün son 24 saatin sistem kayıtlarını özetleyip yerel bir modele yorumlatabilir. Ayarlar → Günlük rapor'dan açılır; saat ve model (Ollama'da yüklü modeller listelenir) oradan seçilir. Raporlar sol menüdeki **Raporlar** sayfasında 30 gün saklanır; "Şimdi oluştur" ile istendiğinde de hazırlanır.
+
+- Rakamlar (başarısız SSH ve sudo girişleri, çöken servisler, bellek yetmediği için kapatılan süreçler, disk hataları, en sık uyarılar) kodla hesaplanır; model yalnızca bu özeti yorumlar ve öneri yazar. 3-4B boyutunda bir model yeterlidir.
+- Kayıtlar sunucudan dışarı çıkmaz: rapor servisi ağda yalnızca bu makineye bağlanabilir (`IPAddressDeny=any`) ve Ollama adresi yalnızca `127.0.0.1`/`localhost` olabilir. Parola ve token benzeri değerler maskelenir.
+- Kayıt metinleri modele talimat olarak değil veri olarak verilir; modelin hiçbir yetkisi yoktur ve çıktısı panelde düz metin olarak gösterilir. Küçük modeller yanılabilir; önemli kararlardan önce rakamlara bakın.
+- Ollama yoksa ya da yanıt vermezse rapor yine hazırlanır, yalnızca rakamlardan oluşur.
 
 ## HTTPS
 

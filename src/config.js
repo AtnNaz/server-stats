@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseHash } from './auth.js';
 import { UNIT_NAME } from './collectors/services.js';
+import { isLoopbackUrl } from './report.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -24,6 +25,9 @@ const DEFAULTS = {
   disks: { hide: ['/boot', '/boot/efi', '/efi'] },
   smart: { file: '/var/lib/serverhealth/smart.json' },
   system: { statusFile: '/var/lib/serverhealth/system.json' },
+  // Günlük rapor: Ollama yalnızca bu makinede olabilir, kayıtlar dışarı gönderilmez.
+  ollama: { url: 'http://127.0.0.1:11434' },
+  reports: { dir: '/var/lib/serverhealth/reports' },
 };
 
 export function resolveConfigPath(argv = process.argv.slice(2), env = process.env) {
@@ -61,6 +65,8 @@ function validate(cfg) {
   if (!Array.isArray(cfg.disks.hide) || cfg.disks.hide.some((s) => typeof s !== 'string'))
     errors.push('disks.hide bir metin listesi olmalı');
   if (typeof cfg.smart.file !== 'string' || !cfg.smart.file) errors.push('smart.file boş olamaz');
+  if (!isLoopbackUrl(cfg.ollama.url)) errors.push('ollama.url yalnızca bu makineyi gösterebilir (ör. "http://127.0.0.1:11434")');
+  if (typeof cfg.reports.dir !== 'string' || !cfg.reports.dir) errors.push('reports.dir boş olamaz');
   if (typeof cfg.updateCheck !== 'boolean') errors.push('updateCheck true ya da false olmalı');
   if (!Array.isArray(cfg.allowedHosts) || cfg.allowedHosts.some((s) => typeof s !== 'string' || !s))
     errors.push('allowedHosts bir ana makine adı listesi olmalı (ör. ["panel.example.com"])');
@@ -86,6 +92,8 @@ export function loadConfig(file) {
     disks: { ...DEFAULTS.disks, ...raw.disks },
     smart: { ...DEFAULTS.smart, ...raw.smart },
     system: { ...DEFAULTS.system, ...raw.system },
+    ollama: { ...DEFAULTS.ollama, ...raw.ollama },
+    reports: { ...DEFAULTS.reports, ...raw.reports },
   };
   validate(cfg);
   cfg.services = [...new Set(cfg.services)];

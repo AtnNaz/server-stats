@@ -123,6 +123,7 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
   const DEFAULT_STATE = {
     scheduledReboot: { enabled: false, day: 'sun', time: '04:00' },
     smartTests: { enabled: false, shortDay: 'sun', longDay: 1, time: '03:00' },
+    report: { enabled: false, time: '07:00', model: '' },
     rebootTime: '04:00',
   };
 
@@ -134,6 +135,7 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
         ...saved,
         scheduledReboot: { ...DEFAULT_STATE.scheduledReboot, ...saved.scheduledReboot },
         smartTests: { ...DEFAULT_STATE.smartTests, ...saved.smartTests },
+        report: { ...DEFAULT_STATE.report, ...saved.report },
       };
     } catch {
       return structuredClone(DEFAULT_STATE);
@@ -158,6 +160,21 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
     await run(platform.systemctl, ['daemon-reload']);
   }
 
+  // Günlük rapor servisi (serverhealth-report.service) kurulumla gelir ve sıkı kısıtlıdır;
+  // burada yalnızca onu tetikleyen zamanlayıcı yazılır ya da kaldırılır.
+  const REPORT_TIMER = 'serverhealth-report.timer';
+  async function setReportTimer(time) {
+    // Persistent=true: sunucu o saatte kapalıysa rapor açılışta oluşturulur.
+    await writeAtomic(path.join(files.units, REPORT_TIMER), `[Unit]\nDescription=Sunucu Durumu - günlük rapor\n\n[Timer]\nOnCalendar=${onCalendarWeekly('daily', time)}\nPersistent=true\nUnit=serverhealth-report.service\n\n[Install]\nWantedBy=timers.target\n`);
+    await run(platform.systemctl, ['daemon-reload']);
+    await run(platform.systemctl, ['enable', '--now', REPORT_TIMER]);
+  }
+  async function removeReportTimer() {
+    await run(platform.systemctl, ['disable', '--now', REPORT_TIMER]);
+    await unlink(path.join(files.units, REPORT_TIMER)).catch(() => {});
+    await run(platform.systemctl, ['daemon-reload']);
+  }
+
   let platform;
 
   async function applySettings(requested) {
@@ -167,6 +184,7 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
       ...requested,
       scheduledReboot: { ...state.scheduledReboot, ...requested.scheduledReboot },
       smartTests: { ...state.smartTests, ...requested.smartTests },
+      report: { ...state.report, ...requested.report },
     };
     const changes = [];
 
@@ -211,6 +229,14 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
         await removeTimer('serverhealth-smarttest-long');
       }
       changes.push('smartTests');
+    }
+
+    if (requested.report) {
+      const r = next.report;
+      if (r.enabled && !r.model) throw new Error('model_missing');
+      if (r.enabled) await setReportTimer(r.time);
+      else await removeReportTimer();
+      changes.push('report');
     }
 
     await writeAtomic(files.state, `${JSON.stringify(next, null, 2)}\n`, 0o644);
@@ -300,6 +326,7 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
         rebootTime: platform.autoUpdates ? apt.rebootTime : state.rebootTime,
         scheduledReboot: state.scheduledReboot,
         smartTests: state.smartTests,
+        report: state.report,
       },
       updates: extra.updates ?? previous.updates ?? null,
       running: extra.running ?? null,
@@ -415,6 +442,10 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
         await record({ type: 'action', action: 'refresh', ok: true });
       } else if (req.action === 'reboot') {
         reboot = true;
+      } else if (req.action === 'report') {
+        // Rapor birkaç dakika sürebilir; servis arka planda başlatılır, sonucu Raporlar sayfasında görünür.
+        const r = await run(platform.systemctl, ['start', '--no-block', 'serverhealth-report.service']);
+        await record({ type: 'action', action: 'report', ok: r.code === 0, ...(r.code !== 0 && { message: 'report_start_failed' }) });
       }
     }
     if (!updates) updates = await checkUpdates();

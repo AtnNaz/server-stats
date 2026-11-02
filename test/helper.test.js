@@ -151,3 +151,36 @@ test('yardımcı: yarım kalmış eski geçici dosyalar temizlenir', async (t) =
   await helper.processQueue();
   assert.deepEqual(readdirSync(queue), []);
 });
+
+test('günlük rapor: model adı doğrulanır, zamanlayıcı kurulur ve kaldırılır, "şimdi oluştur" servisi başlatır', async (t) => {
+  assert.ok(validateRequest({ type: 'settings', settings: { report: { enabled: true, time: '07:00', model: 'hf.co/kisi/model:Q4_0' } } }).request);
+  assert.ok(validateRequest({ type: 'settings', settings: { report: { model: 'qwen; rm -rf /' } } }).errors);
+  assert.ok(validateRequest({ type: 'settings', settings: { report: { time: '7:00' } } }).errors);
+  assert.ok(validateRequest({ type: 'action', action: 'report' }).request);
+
+  const root = mkdtempSync(path.join(tmpdir(), 'serverhealth-helper-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const queue = path.join(root, 'var/lib/serverhealth-queue');
+  mkdirSync(queue, { recursive: true });
+  const put = (name, obj) => writeFileSync(path.join(queue, name), JSON.stringify(obj));
+  const helper = createHelper({ root, dryRun: true, now: () => 1700000000000, platformOverride: PLATFORM });
+  const timer = path.join(root, 'etc/systemd/system/serverhealth-report.timer');
+
+  put('1.json', { type: 'settings', settings: { report: { enabled: true, time: '06:30', model: 'qwen3.5:4b' } } });
+  await helper.processQueue();
+  assert.match(readFileSync(timer, 'utf8'), /OnCalendar=\*-\*-\* 06:30:00\nPersistent=true\nUnit=serverhealth-report.service/);
+  assert.ok(helper.commands.includes('/usr/bin/systemctl enable --now serverhealth-report.timer'));
+  assert.equal(JSON.parse(readFileSync(path.join(root, 'var/lib/serverhealth/system.json'), 'utf8')).settings.report.model, 'qwen3.5:4b');
+
+  put('2.json', { type: 'action', action: 'report' });
+  await helper.processQueue();
+  assert.ok(helper.commands.includes('/usr/bin/systemctl start --no-block serverhealth-report.service'));
+
+  put('3.json', { type: 'settings', settings: { report: { enabled: false } } });
+  await helper.processQueue();
+  assert.equal(existsSync(timer), false);
+
+  put('4.json', { type: 'settings', settings: { report: { enabled: true, model: '' } } });
+  await helper.processQueue();
+  assert.match(readFileSync(path.join(root, 'var/lib/serverhealth/actions.jsonl'), 'utf8'), /model_missing/);
+});

@@ -1720,6 +1720,66 @@ function buildSmartTestsCard() {
   );
 }
 
+function buildReportCard() {
+  const box = h('div', { class: 'status-box' });
+  const enabled = switchEl(false, null, t('rep.enabled'));
+  const time = inputEl('time', '07:00', { step: 60 });
+  const model = h('select', { class: 'select' });
+  const status = saveStatus();
+  let current = '';
+  let ollama = null;
+  const save = button(t('set.save'), 'accent', () => {
+    if (enabled.input.checked && !model.value) return status.set('err', t('rep.pickModel'));
+    saveSystem({ report: { enabled: enabled.input.checked, time: time.value, model: model.value } }, status, 'report');
+  });
+  const fillModels = () => {
+    const names = (ollama?.models ?? []).map((m) => m.name);
+    if (current && !names.includes(current)) names.unshift(current);
+    fill(
+      model,
+      names.length ? names.map((n) => h('option', { value: n }, n)) : h('option', { value: '' }, t('rep.noModels')),
+    );
+    model.value = current || names.find((n) => /(^|[:/-])\d?\.?\d*b\b/i.test(n) && /(\b|:)[1-8](\.\d)?b/i.test(n)) || names[0] || '';
+  };
+  const renderBox = () =>
+    fill(
+      box,
+      ollama && !ollama.available ? h('div', { class: 'row' }, icon('warn'), h('span', null, t('rep.ollamaMissing'))) : null,
+      h('div', { class: 'row muted small' }, t('rep.hint')),
+    );
+  enabled.onChange((on) => {
+    time.disabled = model.disabled = !on;
+  });
+  api('/api/ollama/models').then((res) => {
+    ollama = res.ok ? res.data : { available: false, models: [] };
+    fillModels();
+    renderBox();
+  });
+  settingsCards.report = {
+    sync(sys) {
+      const r = sys.settings?.report;
+      if (!r) return;
+      current = r.model ?? '';
+      time.value = r.time;
+      fillModels();
+      enabled.set(r.enabled);
+    },
+    update(sys) {
+      enabled.input.disabled = save.disabled = !sys.available;
+      time.disabled = model.disabled = !sys.available || !enabled.input.checked;
+      renderBox();
+    },
+  };
+  return settingsCard(
+    'rep.title',
+    'list',
+    t('rep.desc'),
+    box,
+    h('div', { class: 'form-rows' }, formRow(t('rep.enabled'), enabled.el), formRow(t('rep.time'), time, t('rep.timeHint')), formRow(t('rep.model'), model, t('rep.modelHint'))),
+    h('div', { class: 'form-actions' }, save, status.el),
+  );
+}
+
 function buildPasswordCard() {
   const current = inputEl('password', '', { class: 'wide', autocomplete: 'current-password' });
   const next = inputEl('password', '', { class: 'wide', autocomplete: 'new-password', minlength: 8 });
@@ -1755,6 +1815,7 @@ function historyText(e) {
   if (e.action === 'update') return e.ok ? t('hist.updateOk') : t('hist.updateFail', { reason });
   if (e.action === 'refresh') return t('hist.refresh');
   if (e.action === 'reboot') return t('hist.reboot');
+  if (e.action === 'report') return e.ok ? t('hist.report') : t('hist.reportFail', { reason });
   return e.type;
 }
 
@@ -1843,6 +1904,7 @@ const SETTINGS_SECTIONS = [
   ['guncellemeler', 'set.updates', 'download', buildUpdatesCard],
   ['yeniden-baslatma', 'set.reboot', 'power', buildRebootCard],
   ['disk-testleri', 'set.smartTitle', 'disk', buildSmartTestsCard],
+  ['rapor', 'rep.title', 'list', buildReportCard],
   ['guvenlik', 'set.security', 'key', buildPasswordCard],
   ['gecmis', 'set.historyTitle', 'list', buildHistoryCard],
   ['hakkinda', 'set.about', 'info', buildAboutCard],
@@ -1999,6 +2061,161 @@ for (const button of document.querySelectorAll('#proc-sort button')) {
   });
 }
 
+// ---------- Günlük raporlar ----------
+
+const REPORT_STATUS = { good: ['ok', 'rep.good'], attention: ['warn', 'rep.attention'], critical: ['crit', 'rep.critical'] };
+const SEVERITY = { info: ['info', 'ok', 'rep.sevInfo'], warning: ['warn', 'warn', 'rep.sevWarning'], critical: ['crit', 'crit', 'rep.sevCritical'] };
+const dayFormat = new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'long', year: 'numeric', weekday: 'long' });
+const shortDayFormat = new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'short', weekday: 'short' });
+const reportsState = { list: null, selected: null, waitingSince: null };
+let reportsTimer = null;
+let reportsBuilt = false;
+
+const reportDate = (date) => new Date(`${date}T12:00:00`);
+
+function factTable(title, head, rows) {
+  if (!rows?.length) return null;
+  return h(
+    'div',
+    { class: 'report-section' },
+    h('h3', null, title),
+    h('table', { class: 'report-table' }, h('thead', null, h('tr', null, head.map(([label]) => h('th', null, label)))), h('tbody', null, rows.map((r) => h('tr', null, head.map(([, key, cls]) => h('td', cls ? { class: cls } : null, r[key] ?? '—')))))),
+  );
+}
+
+function renderReport(r) {
+  const detail = $('report-detail');
+  if (!r) return fill(detail, h('article', { class: 'card' }, placeholder(t('rep.empty'))));
+  const f = r.facts ?? {};
+  const st = REPORT_STATUS[r.ai?.status];
+  const generate = button(t('rep.generate'), null, generateReport);
+  generate.disabled = Boolean(reportsState.waitingSince);
+  const genStatus = h('span', { class: 'save-status', id: 'report-gen-status' }, reportsState.waitingSince ? t('rep.generating') : '');
+  const ai = r.ai
+    ? [
+        h('p', { class: 'report-summary' }, r.ai.summary),
+        r.ai.findings.length
+          ? h(
+              'ul',
+              { class: 'findings' },
+              r.ai.findings.map((x) => {
+                const [kind, ic, label] = SEVERITY[x.severity] ?? SEVERITY.info;
+                return h('li', null, tag(kind, ic, t(label)), h('strong', null, x.title), x.evidence ? h('p', null, x.evidence) : null, x.recommendation ? h('p', null, `${t('rep.recommendation')}: ${x.recommendation}`) : null);
+              }),
+            )
+          : null,
+      ]
+    : h('div', { class: 'status-box' }, h('div', { class: 'row' }, icon('warn'), h('span', null, Object.hasOwn(window.I18N.DICT[window.I18N.lang] ?? {}, `rep.aiError.${r.aiError}`) ? t(`rep.aiError.${r.aiError}`) : t('rep.aiError.other'))));
+  const tiles = [
+    [f.totals?.lines, 'rep.fLines'],
+    [f.totals?.warnings, 'rep.fWarnings'],
+    [f.totals?.errors, 'rep.fErrors'],
+    [f.ssh?.failures, 'rep.fSsh'],
+    [f.sudoFailures, 'rep.fSudo'],
+    [f.boots, 'rep.fBoots'],
+    [f.updates?.pending, 'rep.fUpdates'],
+  ].filter(([v]) => v != null);
+  fill(
+    detail,
+    h(
+      'article',
+      { class: 'card' },
+      h('div', { class: 'report-head' }, h('h2', null, dayFormat.format(reportDate(r.date))), st ? tag(st[0], st[0], t(st[1])) : null, h('div', { class: 'actions' }, genStatus, generate)),
+      h('p', { class: 'muted small' }, t('rep.meta', { model: r.model ?? '—', time: dateTimeFormat.format(new Date(r.createdAt)), seconds: Math.max(1, Math.round((r.durationMs ?? 0) / 1000)) })),
+      ai,
+      h('div', { class: 'report-section' }, h('h3', null, t('rep.facts')), h('div', { class: 'fact-tiles' }, tiles.map(([v, k]) => h('div', null, h('b', null, num0.format(v)), h('span', null, t(k)))))),
+      factTable(t('rep.tFailedUnits'), [[t('rep.cUnit'), 'unit']], (f.failedUnits ?? []).map((unit) => ({ unit }))),
+      factTable(t('rep.tServiceFailures'), [[t('rep.cUnit'), 'unit'], [t('rep.cCount'), 'count', 'num']], f.serviceFailures),
+      factTable(t('rep.tSshSources'), [[t('rep.cAddress'), 'address'], [t('rep.cCount'), 'count', 'num']], f.ssh?.topSources),
+      factTable(t('rep.tSshUsers'), [[t('rep.cUser'), 'user'], [t('rep.cCount'), 'count', 'num']], f.ssh?.topUsers),
+      factTable(t('rep.tSshAccepted'), [[t('rep.cLogin'), 'login'], [t('rep.cCount'), 'count', 'num']], f.ssh?.accepted),
+      factTable(t('rep.tOom'), [[t('rep.cProcess'), 'process'], [t('rep.cCount'), 'count', 'num']], f.oomKills),
+      factTable(t('rep.tDisk'), [[t('rep.cMessage'), 'message', 'sample'], [t('rep.cCount'), 'count', 'num']], f.diskErrors),
+      factTable(t('rep.tSmart'), [[t('rep.cDisk'), 'disk']], (f.smartFailing ?? []).map((disk) => ({ disk }))),
+      factTable(
+        t('rep.tGroups', { n: f.groupCount ?? 0 }),
+        [[t('rep.cUnit'), 'unit'], [t('rep.cCount'), 'count', 'num'], [t('rep.cMessage'), 'sample', 'sample']],
+        f.groups,
+      ),
+    ),
+  );
+}
+
+function renderReportDays() {
+  const list = reportsState.list ?? [];
+  fill(
+    $('report-days'),
+    list.length
+      ? list.map((x) => {
+          const b = h('button', { type: 'button', 'aria-current': String(x.date === reportsState.selected) }, h('span', { class: `dot ${REPORT_STATUS[x.status]?.[0] ?? ''}` }), shortDayFormat.format(reportDate(x.date)));
+          b.addEventListener('click', () => showReport(x.date));
+          return b;
+        })
+      : h('p', { class: 'muted small' }, t('rep.noReports')),
+  );
+}
+
+async function showReport(date) {
+  reportsState.selected = date;
+  renderReportDays();
+  const res = await api(`/api/reports/${date}`);
+  renderReport(res.ok ? res.data : null);
+}
+
+async function loadReports(prefer) {
+  if (!reportsBuilt) {
+    fill($('reports-root'), h('nav', { class: 'report-days', id: 'report-days', 'aria-label': t('nav.reports') }), h('div', { id: 'report-detail' }));
+    reportsBuilt = true;
+  }
+  const res = await api('/api/reports');
+  if (!res.ok) return;
+  reportsState.list = res.data.reports;
+  const date = prefer ?? (reportsState.list.some((x) => x.date === reportsState.selected) ? reportsState.selected : reportsState.list[0]?.date);
+  if (date) await showReport(date);
+  else {
+    renderReportDays();
+    renderReport(null);
+  }
+}
+
+// "Şimdi oluştur": root yardımcısı rapor servisini başlatır; yeni rapor gelene kadar liste yoklanır.
+async function generateReport() {
+  reportsState.waitingSince = Date.now();
+  const res = await api('/api/actions', { action: 'report' });
+  if (!res.ok) {
+    reportsState.waitingSince = null;
+    const s = $('report-gen-status');
+    if (s) s.textContent = t('set.saveFailed');
+    return;
+  }
+  if (reportsState.list?.length) await showReport(reportsState.selected);
+  else renderReport(null);
+  pollReports();
+}
+
+function pollReports() {
+  clearTimeout(reportsTimer);
+  if (!reportsState.waitingSince || currentRoute() !== 'raporlar') return;
+  reportsTimer = setTimeout(async () => {
+    const res = await api('/api/reports');
+    const fresh = res.ok && res.data.reports.find((x) => x.createdAt > reportsState.waitingSince);
+    if (fresh || Date.now() - reportsState.waitingSince > 15 * 60_000) {
+      reportsState.waitingSince = null;
+      return loadReports(fresh?.date);
+    }
+    pollReports();
+  }, 5000);
+}
+
+function enterReports() {
+  loadReports();
+  pollReports();
+}
+
+function leaveReports() {
+  clearTimeout(reportsTimer);
+}
+
 // ---------- Bölümler ve sol menü ----------
 
 const ROUTES = {
@@ -2009,6 +2226,7 @@ const ROUTES = {
   donanim: t('nav.hardware'),
   surecler: t('nav.processes'),
   servisler: t('nav.services'),
+  raporlar: t('nav.reports'),
   ayarlar: t('nav.settings'),
 };
 let hostName = null;
@@ -2046,6 +2264,8 @@ function applyRoute() {
   setSidebar(false);
   if (route === 'ayarlar') enterSettings();
   else leaveSettings();
+  if (route === 'raporlar') enterReports();
+  else leaveReports();
   window.scrollTo(0, 0);
   // Gizliyken genişliği sıfır olan grafikler görünür olunca yeniden çizilir.
   requestAnimationFrame(redrawCharts);

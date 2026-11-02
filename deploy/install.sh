@@ -167,6 +167,13 @@ for unit in serverhealth-helper.service serverhealth-helper.path serverhealth-he
 done
 # Kuyruk root'a aittir; panel içine dosya bırakabilir ama klasörün kendisini değiştiremez.
 install -d -m 0730 -o root -g "$SVC_USER" /var/lib/serverhealth-queue
+
+# Günlük rapor servisi; zamanlayıcısını panelden açılan ayara göre yardımcı kurar.
+# Raporlar root:serverhealth 0640 yazılır (setgid klasör), panel yalnızca okur.
+sed "s|@NODE@|$NODE_BIN|g" "$APP_DIR/deploy/serverhealth-report.service" > /etc/systemd/system/serverhealth-report.service
+chmod 0644 /etc/systemd/system/serverhealth-report.service
+install -d -m 0755 /var/lib/serverhealth
+install -d -m 2750 -o root -g "$SVC_USER" /var/lib/serverhealth/reports
 install -d -m 0750 -o "$SVC_USER" -g "$SVC_USER" /var/lib/serverhealth-panel
 rmdir /var/lib/serverhealth-panel/queue 2>/dev/null || true # eski sürümlerin kuyruğu
 
