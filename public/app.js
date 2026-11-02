@@ -1770,12 +1770,29 @@ function buildReportCard() {
       renderBox();
     },
   };
+  // Ayarlardan da anlık rapor istenebilir; rapor hazır olunca Raporlar sayfasında görünür.
+  const genStatus = saveStatus();
+  const generate = button(t('rep.generate'), null, async () => {
+    generate.disabled = true;
+    const res = await api('/api/actions', { action: 'report' });
+    generate.disabled = false;
+    if (!res.ok) return genStatus.set('err', t('set.saveFailed'));
+    reportsState.waitingSince = Date.now();
+    genStatus.set('ok', t('rep.generateStarted'));
+  });
   return settingsCard(
     'rep.title',
     'list',
     t('rep.desc'),
     box,
-    h('div', { class: 'form-rows' }, formRow(t('rep.enabled'), enabled.el), formRow(t('rep.time'), time, t('rep.timeHint')), formRow(t('rep.model'), model, t('rep.modelHint'))),
+    h(
+      'div',
+      { class: 'form-rows' },
+      formRow(t('rep.enabled'), enabled.el),
+      formRow(t('rep.time'), time, t('rep.timeHint')),
+      formRow(t('rep.model'), model, t('rep.modelHint')),
+      formRow(t('rep.generateNow'), [generate, genStatus.el], t('rep.generateDesc')),
+    ),
     h('div', { class: 'form-actions' }, save, status.el),
   );
 }
@@ -2128,12 +2145,13 @@ function factTable(title, head, rows) {
 
 function renderReport(r) {
   const detail = $('report-detail');
-  if (!r) return fill(detail, h('article', { class: 'card' }, placeholder(t('rep.empty'))));
-  const f = r.facts ?? {};
-  const st = REPORT_STATUS[r.ai?.status];
-  const generate = button(t('rep.generate'), null, generateReport);
+  const generate = button(t('rep.generate'), r ? null : 'accent', generateReport);
   generate.disabled = Boolean(reportsState.waitingSince);
   const genStatus = h('span', { class: 'save-status', id: 'report-gen-status' }, reportsState.waitingSince ? t('rep.generating') : '');
+  // Henüz rapor yokken de "Şimdi oluştur" görünür.
+  if (!r) return fill(detail, h('article', { class: 'card' }, h('div', { class: 'report-head' }, h('h2', null, t('nav.reports')), h('div', { class: 'actions' }, genStatus, generate)), placeholder(t('rep.empty'))));
+  const f = r.facts ?? {};
+  const st = REPORT_STATUS[r.ai?.status];
   const ai = r.ai
     ? [
         h('p', { class: 'report-summary' }, r.ai.summary),
