@@ -4,7 +4,7 @@
 
 export const WEEKDAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 export const UPDATE_MODES = ['off', 'security', 'all'];
-export const ACTIONS = ['update', 'reboot', 'refresh', 'report'];
+export const ACTIONS = ['update', 'reboot', 'refresh', 'report', 'self-update'];
 // Ollama model adı, ör. "qwen3.5:4b" ya da "hf.co/kullanici/model:Q4_0"
 export const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;

@@ -184,3 +184,43 @@ test('günlük rapor: model adı doğrulanır, zamanlayıcı kurulur ve kaldır�
   await helper.processQueue();
   assert.match(readFileSync(path.join(root, 'var/lib/serverhealth/actions.jsonl'), 'utf8'), /model_missing/);
 });
+
+test('panelden güncelleme: yalnızca daha yeni sürüm indirilir ve ayrı birimde kurulur', async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'serverhealth-helper-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const appDir = path.join(root, 'opt/serverhealth');
+  mkdirSync(appDir, { recursive: true });
+  writeFileSync(path.join(appDir, 'package.json'), JSON.stringify({ version: '1.0.0', homepage: 'https://github.com/sahip/depo' }));
+  const queue = path.join(root, 'var/lib/serverhealth-queue');
+  mkdirSync(queue, { recursive: true });
+  const history = () => readFileSync(path.join(root, 'var/lib/serverhealth/actions.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((e) => e.action === 'self-update');
+
+  let latest = 'v1.2.0';
+  const urls = [];
+  const fetchImpl = async (url) => {
+    urls.push(String(url));
+    if (String(url).startsWith('https://api.github.com/')) return { ok: true, status: 200, json: async () => ({ tag_name: latest }) };
+    return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer };
+  };
+  const helper = createHelper({ root, dryRun: true, appDir, fetchImpl, now: () => 1700000000000, platformOverride: PLATFORM });
+  const run = async () => {
+    writeFileSync(path.join(queue, `${urls.length}.json`), JSON.stringify({ type: 'action', action: 'self-update' }));
+    await helper.processQueue();
+  };
+
+  await run();
+  assert.deepEqual(urls, ['https://api.github.com/repos/sahip/depo/releases/latest', 'https://codeload.github.com/sahip/depo/tar.gz/refs/tags/v1.2.0']);
+  assert.ok(helper.commands.some((c) => c.startsWith('tar -xzf ') && c.includes('--strip-components=1 --no-same-owner')));
+  assert.ok(helper.commands.some((c) => /systemd-run --unit=serverhealth-update --collect --quiet \/bin\/bash .*\/deploy\/install\.sh$/.test(c)));
+  assert.deepEqual(history().at(-1), { time: 1700000000000, type: 'action', action: 'self-update', ok: true, version: '1.2.0', upToDate: false });
+
+  latest = 'v1.0.0'; // aynı sürüm: indirme yapılmaz
+  urls.length = 0;
+  await run();
+  assert.equal(urls.length, 1);
+  assert.equal(history().at(-1).upToDate, true);
+
+  latest = '<script>'; // bozuk etiket
+  await run();
+  assert.equal(history().at(-1).message, 'release_check_failed');
+});

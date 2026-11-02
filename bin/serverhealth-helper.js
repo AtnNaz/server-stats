@@ -9,7 +9,7 @@
 //   serverhealth-helper.js --smart-test short  bütün disklerde kısa SMART testini başlat
 //   --root DİZİN --dry-run                      testler için: dosyaları DİZİN altına yaz, komut çalıştırma
 import { execFile, spawn } from 'node:child_process';
-import { readFile, writeFile, readdir, lstat, unlink, rename, mkdir, stat, appendFile, access, open, constants } from 'node:fs/promises';
+import { readFile, writeFile, readdir, lstat, unlink, rename, mkdir, stat, appendFile, access, open, rm, constants } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -20,6 +20,7 @@ import {
   onCalendarWeekly,
   onCalendarMonthly,
 } from '../src/system-settings.js';
+import { isNewer, parseVersion, repoFromUrl } from '../src/update-check.js';
 
 const APP_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MAX_REQUEST = 16 * 1024;
@@ -40,7 +41,7 @@ function parseArgs(argv) {
   return opts;
 }
 
-export function createHelper({ root = '', dryRun = false, queue, nodeBin = process.execPath, appDir = APP_DIR, now = () => Date.now(), platformOverride = null } = {}) {
+export function createHelper({ root = '', dryRun = false, queue, nodeBin = process.execPath, appDir = APP_DIR, now = () => Date.now(), platformOverride = null, fetchImpl = fetch } = {}) {
   const P = (p) => path.join(root || '/', p);
   const files = {
     apt: P('/etc/apt/apt.conf.d/52serverhealth'),
@@ -442,6 +443,13 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
         await record({ type: 'action', action: 'refresh', ok: true });
       } else if (req.action === 'reboot') {
         reboot = true;
+      } else if (req.action === 'self-update') {
+        try {
+          const r = await selfUpdate();
+          await record({ type: 'action', action: 'self-update', ok: true, version: r.version, upToDate: Boolean(r.upToDate) });
+        } catch (err) {
+          await record({ type: 'action', action: 'self-update', ok: false, message: err.message });
+        }
       } else if (req.action === 'report') {
         // Rapor birkaç dakika sürebilir; servis arka planda başlatılır, sonucu Raporlar sayfasında görünür.
         const r = await run(platform.systemctl, ['start', '--no-block', 'serverhealth-report.service']);
@@ -456,6 +464,48 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
       return;
     }
     await writeStatus({ updates });
+  }
+
+  // Panelden güncelleme: hangi sürümün kurulacağına panel değil yardımcı karar verir. Kurulu
+  // package.json'daki GitHub deposunun son sürümü, mevcut sürümden yeniyse indirilip kurulur.
+  const MAX_ARCHIVE = 20 * 1024 * 1024;
+  async function selfUpdate() {
+    const pkg = JSON.parse(await readFile(path.join(appDir, 'package.json'), 'utf8'));
+    const repo = repoFromUrl(pkg.homepage);
+    if (!repo) throw new Error('no_repo');
+    const headers = { 'User-Agent': 'server-stats' };
+    let tag;
+    try {
+      const res = await fetchImpl(`https://api.github.com/repos/${repo}/releases/latest`, { headers: { ...headers, Accept: 'application/vnd.github+json' }, redirect: 'error', signal: AbortSignal.timeout(15_000) });
+      tag = res.ok ? String((await res.json())?.tag_name ?? '') : '';
+    } catch {
+      tag = '';
+    }
+    if (!parseVersion(tag)) throw new Error('release_check_failed');
+    if (!isNewer(tag, pkg.version)) return { version: pkg.version, upToDate: true };
+
+    const dir = P('/var/lib/serverhealth/update');
+    await rm(dir, { recursive: true, force: true });
+    const src = path.join(dir, 'src');
+    await mkdir(src, { recursive: true, mode: 0o700 });
+    let archive;
+    try {
+      const res = await fetchImpl(`https://codeload.github.com/${repo}/tar.gz/refs/tags/${tag}`, { headers, redirect: 'error', signal: AbortSignal.timeout(120_000) });
+      if (!res.ok) throw new Error();
+      archive = Buffer.from(await res.arrayBuffer());
+    } catch {
+      throw new Error('download_failed');
+    }
+    if (archive.length > MAX_ARCHIVE) throw new Error('download_failed');
+    const file = path.join(dir, 'release.tar.gz');
+    await writeFile(file, archive, { mode: 0o600 });
+    const x = await run('tar', ['-xzf', file, '-C', src, '--strip-components=1', '--no-same-owner', '--no-same-permissions']);
+    if (x.code !== 0) throw new Error('extract_failed');
+    // install.sh paneli ve bu yardımcıyı yeniden başlatır; içeriden beklenirse kilitlenirdi.
+    // Bu yüzden ayrı, geçici bir systemd biriminde çalıştırılır.
+    const r = await run((await which('systemd-run')) ?? '/usr/bin/systemd-run', ['--unit=serverhealth-update', '--collect', '--quiet', '/bin/bash', path.join(src, 'deploy', 'install.sh')]);
+    if (r.code !== 0) throw new Error('install_start_failed');
+    return { version: tag.replace(/^v/, '') };
   }
 
   async function smartTest(kind) {

@@ -1816,6 +1816,10 @@ function historyText(e) {
   if (e.action === 'refresh') return t('hist.refresh');
   if (e.action === 'reboot') return t('hist.reboot');
   if (e.action === 'report') return e.ok ? t('hist.report') : t('hist.reportFail', { reason });
+  if (e.action === 'self-update') {
+    if (!e.ok) return t('hist.selfUpdateFail', { reason });
+    return e.upToDate ? t('hist.selfUpdateCurrent', { version: e.version }) : t('hist.selfUpdate', { version: e.version });
+  }
   return e.type;
 }
 
@@ -1853,6 +1857,31 @@ function updateStatus(u) {
   return h('span', null, t('set.aboutUpToDate', { time }));
 }
 
+// Kurulum paneli yeniden başlatır: /healthz önce yanıt vermez olur, sonra döner. Döndüğünde sayfa
+// yenilenir (oturumlar bellekte tutulduğu için giriş ekranı açılır). Panel hiç kapanmazsa kurulum
+// başlamamıştır; ayrıntı işlem geçmişindedir.
+function waitForRestart(status, onGiveUp) {
+  const started = Date.now();
+  let wentDown = false;
+  const tick = async () => {
+    let up = false;
+    try {
+      up = (await fetch(new URL('/healthz', window.location.origin), { cache: 'no-store', signal: AbortSignal.timeout(3000) })).ok;
+    } catch {
+      up = false;
+    }
+    if (!up) wentDown = true;
+    if (up && wentDown) return window.location.reload();
+    if (!wentDown && Date.now() - started > 3 * 60_000) {
+      status.set('err', t('set.aboutInstallStuck'));
+      return onGiveUp();
+    }
+    if (Date.now() - started > 15 * 60_000) return window.location.reload();
+    setTimeout(tick, 2000);
+  };
+  setTimeout(tick, 2000);
+}
+
 function buildAboutCard() {
   const about = settingsState.about ?? {};
   const author = about.author ?? {};
@@ -1862,8 +1891,9 @@ function buildAboutCard() {
   const render = () => {
     const u = settingsState.about?.update;
     fill(updateLine, updateStatus(u));
-    updateHint.textContent = u?.available ? t('set.aboutHowToUpdate') : t('set.aboutUpdatesHint');
-    checkBtn.hidden = !u?.enabled;
+    updateHint.textContent = u?.available ? t('set.aboutInstallHint') : t('set.aboutUpdatesHint');
+    checkBtn.hidden = !u?.enabled || u?.available;
+    installBtn.hidden = !u?.available || !settingsState.system?.available;
     setSettingsBadge('hakkinda', 'info', u?.available ? '1' : null);
   };
   const checkBtn = button(t('set.aboutCheckNow'), null, async () => {
@@ -1876,8 +1906,21 @@ function buildAboutCard() {
     checkStatus.set('', '');
     render();
   });
+  // Panelden güncelleme: root yardımcısı yeni sürümü GitHub'dan indirip kurar, panel yeniden başlar.
+  const installBtn = button(t('set.aboutInstall'), 'accent', async () => {
+    const version = settingsState.about.update.latest;
+    if (!(await confirmDialog(t('set.aboutInstallTitle', { version }), t('set.aboutInstallText'), t('set.aboutInstall')))) return;
+    installBtn.disabled = true;
+    checkStatus.set('', t('set.aboutInstalling'));
+    const res = await api('/api/actions', { action: 'self-update' });
+    if (!res.ok) {
+      installBtn.disabled = false;
+      return checkStatus.set('err', t('set.saveFailed'));
+    }
+    waitForRestart(checkStatus, () => (installBtn.disabled = false));
+  });
   settingsCards.about = { sync() {}, update: render };
-  const updatesRow = h('div', { class: 'form-row' }, h('div', { class: 'form-label' }, t('set.aboutUpdates'), updateHint), h('div', { class: 'form-control' }, updateLine, checkBtn, checkStatus.el));
+  const updatesRow = h('div', { class: 'form-row' }, h('div', { class: 'form-label' }, t('set.aboutUpdates'), updateHint), h('div', { class: 'form-control' }, updateLine, checkBtn, installBtn, checkStatus.el));
   render();
   return settingsCard(
     'set.about',

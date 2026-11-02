@@ -78,7 +78,9 @@ Panel kurulduğu makineyi kendisi tanır; sunucuya özgü bir ayar gerektirmez:
 
 ### Güncelleme
 
-`cd ~/server-stats && git pull` ile yeni sürümü indirip `sudo ./deploy/install.sh` komutunu tekrar çalıştırın. Mevcut yapılandırma korunur, servis yeniden başlatılır.
+Panel iki günde bir yeni sürüm olup olmadığına bakar. Yeni sürüm varsa Ayarlar → Hakkında'daki **Güncellemeyi kur** düğmesiyle kurulabilir: root yardımcısı kurulu depodaki son sürümü GitHub'dan indirir ve kurar; panel birkaç saniyeliğine yeniden başlar.
+
+Elle güncellemek için `cd ~/server-stats && git pull` ile yeni sürümü indirip `sudo ./deploy/install.sh` komutunu tekrar çalıştırın. İki yolda da mevcut yapılandırma korunur.
 
 ### Kaldırma
 
