@@ -13,6 +13,7 @@ const DEFAULTS = {
   historyMinutes: 10,
   trustProxy: false,
   allowedHosts: [],
+  updateCheck: true,
   auth: { username: '', passwordHash: '' },
   tls: { cert: '', key: '' },
   services: [],
@@ -60,6 +61,7 @@ function validate(cfg) {
   if (!Array.isArray(cfg.disks.hide) || cfg.disks.hide.some((s) => typeof s !== 'string'))
     errors.push('disks.hide bir metin listesi olmalı');
   if (typeof cfg.smart.file !== 'string' || !cfg.smart.file) errors.push('smart.file boş olamaz');
+  if (typeof cfg.updateCheck !== 'boolean') errors.push('updateCheck true ya da false olmalı');
   if (!Array.isArray(cfg.allowedHosts) || cfg.allowedHosts.some((s) => typeof s !== 'string' || !s))
     errors.push('allowedHosts bir ana makine adı listesi olmalı (ör. ["panel.example.com"])');
   if (errors.length) throw new Error(`Yapılandırma hatalı:\n  - ${errors.join('\n  - ')}`);

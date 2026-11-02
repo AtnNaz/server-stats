@@ -1203,6 +1203,7 @@ function render(data) {
   const { history, historySize: capacity } = data;
 
   safely(renderUser, data.user);
+  setBadge('ayarlar', data.update ? 'info' : null, data.update ? '1' : null);
   safely(renderHost, s.system, s.system?.cpu?.count);
   if (s.system) {
     safely(renderSystemKpis, s.system, s.sensors);
@@ -1776,14 +1777,47 @@ function buildHistoryCard() {
 }
 
 // Yalnızca https bağlantıları tıklanabilir yapılır; yeni sekme açılan sayfaya erişemez.
-function externalLink(url) {
-  if (typeof url !== 'string' || !url.startsWith('https://')) return h('span', null, '—');
-  return h('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, url.replace(/^https:\/\//, ''));
+function externalLink(url, label) {
+  if (typeof url !== 'string' || !url.startsWith('https://')) return h('span', null, label ?? '—');
+  return h('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, label ?? url.replace(/^https:\/\//, ''));
+}
+
+// Hakkında bölümündeki sürüm denetimi satırı.
+function updateStatus(u) {
+  if (!u?.enabled) return h('span', { class: 'muted' }, t('set.aboutCheckOff'));
+  const time = u.checkedAt ? dateTimeFormat.format(new Date(u.checkedAt)) : null;
+  if (u.available) return externalLink(u.url, t('set.aboutNewVersion', { version: u.latest }));
+  if (!time) return h('span', { class: 'muted' }, t('set.aboutNeverChecked'));
+  if (u.error) return h('span', { class: 'muted' }, t('set.aboutCheckFailed', { time }));
+  return h('span', null, t('set.aboutUpToDate', { time }));
 }
 
 function buildAboutCard() {
   const about = settingsState.about ?? {};
   const author = about.author ?? {};
+  const updateLine = h('span');
+  const updateHint = h('small');
+  const checkStatus = saveStatus();
+  const render = () => {
+    const u = settingsState.about?.update;
+    fill(updateLine, updateStatus(u));
+    updateHint.textContent = u?.available ? t('set.aboutHowToUpdate') : t('set.aboutUpdatesHint');
+    checkBtn.hidden = !u?.enabled;
+    setSettingsBadge('hakkinda', 'info', u?.available ? '1' : null);
+  };
+  const checkBtn = button(t('set.aboutCheckNow'), null, async () => {
+    checkBtn.disabled = true;
+    checkStatus.set('', t('set.aboutChecking'));
+    const res = await api('/api/update-check', {});
+    checkBtn.disabled = false;
+    if (!res.ok) return checkStatus.set('err', t('set.saveFailed'));
+    settingsState.about.update = res.data;
+    checkStatus.set('', '');
+    render();
+  });
+  settingsCards.about = { sync() {}, update: render };
+  const updatesRow = h('div', { class: 'form-row' }, h('div', { class: 'form-label' }, t('set.aboutUpdates'), updateHint), h('div', { class: 'form-control' }, updateLine, checkBtn, checkStatus.el));
+  render();
   return settingsCard(
     'set.about',
     'info',
@@ -1791,7 +1825,8 @@ function buildAboutCard() {
     h(
       'div',
       { class: 'form-rows' },
-      formRow(t('set.aboutVersion'), h('span', null, about.version ?? '—')),
+      formRow(t('set.aboutVersion'), h('span', null, about.version ? `v${about.version}` : '—')),
+      updatesRow,
       formRow(t('set.aboutDeveloper'), h('span', null, author.name ?? '—')),
       formRow('GitHub', externalLink(author.url)),
       formRow(t('set.aboutSource'), externalLink(about.homepage)),

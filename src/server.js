@@ -15,6 +15,7 @@ import { validateRequest } from './system-settings.js';
 import { setLanguage } from './i18n.js';
 import { createSessions } from './sessions.js';
 import { createSampler } from './sampler.js';
+import { createUpdateChecker, repoFromUrl } from './update-check.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -165,6 +166,7 @@ function main() {
   const sessions = createSessions();
   let sampler = createSampler(effective);
   const assets = loadAssets();
+  const updates = createUpdateChecker({ repo: repoFromUrl(ABOUT.homepage), current: ABOUT.version, stateDir, enabled: config.updateCheck });
 
   async function applySettings(previous) {
     effective = effectiveConfig(config, settingsStore.get());
@@ -287,6 +289,7 @@ function main() {
       if (pathname === '/api/password') return handlePassword(req, res);
       if (pathname === '/api/system') return handleSystem(req, res);
       if (pathname === '/api/actions') return handleAction(req, res);
+      if (pathname === '/api/update-check') return handleUpdateCheck(req, res);
       return send(req, res, 405, TEXT, 'Method not allowed\n', { Allow: 'GET, HEAD' });
     }
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(req, res, 405, TEXT, 'İzin verilmeyen yöntem\n', { Allow: 'GET, HEAD, POST' });
@@ -315,10 +318,16 @@ function main() {
     }
 
     if (pathname === '/api/stats') {
-      return sendJson(req, res, 200, { user, settings: { language: effective.language, thresholds: effective.thresholds }, ...sampler.current() });
+      const update = updates.status();
+      return sendJson(req, res, 200, {
+        user,
+        settings: { language: effective.language, thresholds: effective.thresholds },
+        update: update.available ? { latest: update.latest } : null,
+        ...sampler.current(),
+      });
     }
     if (pathname === '/api/settings') {
-      return sendJson(req, res, 200, { user, panel: publicSettings(effective), system: await readSystemStatus(), about: ABOUT });
+      return sendJson(req, res, 200, { user, panel: publicSettings(effective), system: await readSystemStatus(), about: { ...ABOUT, update: updates.status() } });
     }
     if (pathname === '/api/services/available') {
       try {
@@ -374,6 +383,15 @@ function main() {
     return sendJson(req, res, 202, { queued: true });
   }
 
+  // "Şimdi denetle": son bir dakika içinde başarıyla denetlendiyse GitHub'a tekrar sorulmaz.
+  async function handleUpdateCheck(req, res) {
+    const body = await readJsonBody(req, res);
+    if (!body) return;
+    const current = updates.status();
+    if (current.checkedAt && !current.error && Date.now() - current.checkedAt < 60_000) return sendJson(req, res, 200, current);
+    return sendJson(req, res, 200, await updates.check());
+  }
+
   async function handleAction(req, res) {
     const body = await readJsonBody(req, res);
     if (!body) return;
@@ -421,9 +439,11 @@ function main() {
     }
   });
   sampler.start();
+  updates.start();
 
   const shutdown = () => {
     sampler.stop();
+    updates.stop();
     server.close(() => process.exit(0));
     server.closeAllConnections?.();
     setTimeout(() => process.exit(0), 3000).unref();

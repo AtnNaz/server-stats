@@ -15,7 +15,7 @@ async function startServer(t) {
   const file = path.join(dir, 'config.json');
   writeFileSync(
     file,
-    JSON.stringify({ host: '127.0.0.1', port, auth: { username: 'admin', passwordHash: await hashPassword('dogru-sifre') }, system: { statusFile: path.join(dir, 'system.json') } }),
+    JSON.stringify({ host: '127.0.0.1', port, updateCheck: false, auth: { username: 'admin', passwordHash: await hashPassword('dogru-sifre') }, system: { statusFile: path.join(dir, 'system.json') } }),
   );
   const env = { ...process.env, STATE_DIRECTORY: path.join(dir, 'state') };
   const child = spawn(process.execPath, ['src/server.js', '--config', file], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -100,6 +100,7 @@ test('ayarlar: kaydetme, dil, şifre değiştirme ve sistem isteği kuyruğu', a
   const pkg = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
   assert.equal(initial.about.version, pkg.version); // Hakkında bölümü sürümü package.json'dan alır
   assert.equal(initial.about.author.name, pkg.author.name);
+  assert.equal(initial.about.update.enabled, false); // testte GitHub'a istek gitmez
 
   // Geçersiz alan ve değerler reddedilir; Basic Auth ile ayar değiştirilemez.
   assert.equal((await post(base, '/api/settings', { intervalSeconds: 7 }, cookie)).status, 400);

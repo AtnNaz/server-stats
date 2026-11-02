@@ -15,7 +15,7 @@ Geliştirici: [Ali Toprak Naz](https://github.com/AtnNaz) · Lisans: [PolyForm N
 
 Panel sol menüden bölümlere ayrılır (Genel bakış, Ekran kartı, Depolama, Ağ, Süreçler, Servisler); menüdeki rozetler sorunlu bölümleri işaret eder. Birkaç saniyede bir kendini günceller ve son 10 dakikanın grafiğini tutar. Giriş ekranından oturum açılır; aynı veriler `/api/stats` adresinden JSON olarak da alınabilir (bkz. [API](#api)).
 
-Hiçbir npm paketine ihtiyaç duymaz; yalnızca Node.js'in kendi modüllerini kullanır ve bilgileri doğrudan `/proc`, `/sys` ve `systemctl` üzerinden okur. Sunucudan dışarıya hiçbir istek gitmez.
+Hiçbir npm paketine ihtiyaç duymaz; yalnızca Node.js'in kendi modüllerini kullanır ve bilgileri doğrudan `/proc`, `/sys` ve `systemctl` üzerinden okur. Tek dış bağlantı, iki günde bir GitHub'dan son sürüm numarasını sormaktır; bu istekte sunucuya dair hiçbir bilgi gönderilmez ve `"updateCheck": false` ile kapatılabilir.
 
 ## Gereksinimler
 
@@ -100,6 +100,7 @@ Ayarlar `/etc/serverhealth/config.json` dosyasındadır. Değişiklikten sonra `
 | `intervalSeconds` | `3` | Verilerin kaç saniyede bir toplanacağı (1–60) |
 | `historyMinutes` | `10` | Grafiklerde gösterilecek süre (dakika) |
 | `trustProxy` | `false` | Ters vekil (nginx) arkasındaysa `true`; kilitleme için istemci IP'si `X-Real-IP` başlığından alınır |
+| `updateCheck` | `true` | İki günde bir GitHub'daki son sürüme bakar; yeni sürüm varsa Ayarlar → Hakkında'da gösterir |
 | `allowedHosts` | `[]` | Panelin kabul ettiği ek adlar (ör. `["durum.ornek.com"]`). Sunucunun kendi IP adresleri, makine adı ve `localhost` her zaman kabul edilir; başka adlarla gelen istekler (DNS rebinding) reddedilir. `["*"]` denetimi kapatır |
 | `auth.username` | `"admin"` | Panel kullanıcı adı |
 | `auth.passwordHash` | — | Şifrenin scrypt hash'i (düz şifre yazmayın, aşağıya bakın) |
