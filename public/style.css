@@ -852,3 +852,10 @@ td.cmd { max-width: 0; width: 100%; overflow: hidden; text-overflow: ellipsis; w
   .report-days { position: static; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
   .report-days button { flex: none; white-space: nowrap; }
 }
+
+/* Ekran kartı sayfasındaki Ollama kartı */
+.oll-sub { margin: 14px 0 8px; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.oll-sub:first-child { margin-top: 0; }
+.oll-loaded { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.oll-loaded li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 11px; background: var(--surface-2); }
+.oll-loaded strong { display: block; overflow-wrap: anywhere; }

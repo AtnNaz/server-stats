@@ -2121,6 +2121,67 @@ for (const button of document.querySelectorAll('#proc-sort button')) {
   });
 }
 
+// ---------- Ollama (Ekran kartı sayfası) ----------
+
+let ollamaTimer = null;
+
+async function loadOllama() {
+  clearTimeout(ollamaTimer);
+  const res = await api('/api/ollama');
+  renderOllama(res.ok ? res.data : null);
+  if (currentRoute() === 'ekran-karti') ollamaTimer = setTimeout(loadOllama, 5000);
+}
+
+function renderOllama(d) {
+  const card = $('ollama-card');
+  card.hidden = !d?.available;
+  if (!d?.available) return;
+  $('ollama-meta').textContent = d.version ? `v${d.version}` : '';
+  const loadedNames = new Set(d.loaded.map((m) => m.name));
+  const loaded = d.loaded.length
+    ? h(
+        'ul',
+        { class: 'oll-loaded' },
+        d.loaded.map((m) => {
+          const pct = m.size ? Math.round((m.vram / m.size) * 100) : 0;
+          const where = pct >= 99 ? t('oll.onGpu') : pct <= 0 ? t('oll.onCpu') : t('oll.split', { pct });
+          const left = m.expiresAt ? Math.round((Date.parse(m.expiresAt) - Date.now()) / 1000) : null;
+          const unload = button(t('oll.unload'), null, async () => {
+            unload.disabled = true;
+            await api('/api/ollama/unload', { model: m.name });
+            loadOllama();
+          });
+          const details = [fmtBytes(m.size), where, m.context ? t('oll.context', { n: num0.format(m.context) }) : null, left > 0 && left < 30 * 86400 ? t('oll.expires', { time: fmtDuration(left) }) : null];
+          return h('li', null, h('div', null, h('strong', null, m.name), h('span', { class: 'muted small' }, details.filter(Boolean).join(' · '))), unload);
+        }),
+      )
+    : h('p', { class: 'muted' }, t('oll.noneLoaded'));
+  const head = [t('oll.cModel'), t('oll.cParams'), t('oll.cQuant'), t('oll.cSize'), t('oll.cModified')];
+  const installed = d.installed.length
+    ? h(
+        'table',
+        { class: 'report-table' },
+        h('thead', null, h('tr', null, head.map((x) => h('th', null, x)))),
+        h(
+          'tbody',
+          null,
+          d.installed.map((m) =>
+            h(
+              'tr',
+              null,
+              h('td', null, m.name, loadedNames.has(m.name) ? [' ', tag('ok', 'ok', t('oll.inMemory'))] : null),
+              h('td', null, m.parameters ?? '—'),
+              h('td', null, m.quantization ?? '—'),
+              h('td', { class: 'num' }, m.size ? fmtBytes(m.size) : '—'),
+              h('td', null, m.modified ? dateTimeFormat.format(new Date(m.modified)) : '—'),
+            ),
+          ),
+        ),
+      )
+    : h('p', { class: 'muted' }, t('oll.noneInstalled'));
+  fill($('ollama-body'), h('h3', { class: 'oll-sub' }, t('oll.loaded')), loaded, h('h3', { class: 'oll-sub' }, t('oll.installed', { n: d.installed.length })), installed);
+}
+
 // ---------- Günlük raporlar ----------
 
 const REPORT_STATUS = { good: ['ok', 'rep.good'], attention: ['warn', 'rep.attention'], critical: ['crit', 'rep.critical'] };
@@ -2327,6 +2388,8 @@ function applyRoute() {
   else leaveSettings();
   if (route === 'raporlar') enterReports();
   else leaveReports();
+  if (route === 'ekran-karti') loadOllama();
+  else clearTimeout(ollamaTimer);
   window.scrollTo(0, 0);
   // Gizliyken genişliği sıfır olan grafikler görünür olunca yeniden çizilir.
   requestAnimationFrame(redrawCharts);

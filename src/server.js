@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig, resolveConfigPath } from './config.js';
 import { createAuth, hashPassword } from './auth.js';
 import { createSettingsStore, effectiveConfig, publicSettings, validatePanelSettings } from './settings.js';
-import { validateRequest } from './system-settings.js';
+import { validateRequest, MODEL_NAME } from './system-settings.js';
 import { setLanguage } from './i18n.js';
 import { createSessions } from './sessions.js';
 import { createSampler } from './sampler.js';
@@ -210,6 +210,51 @@ function main() {
     }
   }
 
+  // Ekran kartı sayfasındaki Ollama kartı: yüklü modeller ve şu an bellekte olanlar.
+  async function ollamaInfo() {
+    const get = (p) => fetch(new URL(p, config.ollama.url), { redirect: 'error', signal: AbortSignal.timeout(3000) }).then((r) => (r.ok ? r.json() : null));
+    try {
+      const [version, tags, ps] = await Promise.all([get('/api/version').catch(() => null), get('/api/tags'), get('/api/ps').catch(() => null)]);
+      if (!tags) return { available: false };
+      return {
+        available: true,
+        version: typeof version?.version === 'string' ? version.version : null,
+        installed: (tags.models ?? [])
+          .filter((m) => typeof m?.name === 'string')
+          .map((m) => ({ name: m.name, size: Number(m.size) || null, modified: m.modified_at ?? null, parameters: m.details?.parameter_size ?? null, quantization: m.details?.quantization_level ?? null, family: m.details?.family ?? null }))
+          .sort((a, b) => a.name.localeCompare(b.name)),
+        loaded: (ps?.models ?? [])
+          .filter((m) => typeof m?.name === 'string')
+          .map((m) => ({ name: m.name, size: Number(m.size) || null, vram: Number(m.size_vram) || 0, expiresAt: m.expires_at ?? null, context: Number(m.context_length) || null })),
+      };
+    } catch {
+      return { available: false };
+    }
+  }
+
+  // Bellekteki bir modeli boşaltır (Ollama: keep_alive 0). Yalnızca o an yüklü bir model kabul edilir.
+  async function handleOllamaUnload(req, res) {
+    const body = await readJsonBody(req, res);
+    if (!body) return;
+    if (typeof body.model !== 'string' || !MODEL_NAME.test(body.model)) return sendJson(req, res, 400, { code: 'invalid' });
+    const info = await ollamaInfo();
+    if (!info.loaded?.some((m) => m.name === body.model)) return sendJson(req, res, 404, { code: 'not_loaded' });
+    try {
+      const r = await fetch(new URL('/api/generate', config.ollama.url), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: body.model, keep_alive: 0 }),
+        redirect: 'error',
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!r.ok) return sendJson(req, res, 502, { code: 'ollama' });
+      console.log(`Ollama modeli bellekten çıkarıldı: ${body.model}`);
+      return sendJson(req, res, 200, { ok: true });
+    } catch {
+      return sendJson(req, res, 502, { code: 'ollama' });
+    }
+  }
+
   async function readSystemStatus() {
     try {
       return { available: true, ...JSON.parse(await readFile(config.system.statusFile, 'utf8')) };
@@ -322,6 +367,7 @@ function main() {
       if (pathname === '/api/system') return handleSystem(req, res);
       if (pathname === '/api/actions') return handleAction(req, res);
       if (pathname === '/api/update-check') return handleUpdateCheck(req, res);
+      if (pathname === '/api/ollama/unload') return handleOllamaUnload(req, res);
       return send(req, res, 405, TEXT, 'Method not allowed\n', { Allow: 'GET, HEAD' });
     }
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(req, res, 405, TEXT, 'İzin verilmeyen yöntem\n', { Allow: 'GET, HEAD, POST' });
@@ -371,6 +417,7 @@ function main() {
       }
     }
     if (pathname === '/api/ollama/models') return sendJson(req, res, 200, await ollamaModels());
+    if (pathname === '/api/ollama') return sendJson(req, res, 200, await ollamaInfo());
     if (pathname === '/api/services/available') {
       try {
         return sendJson(req, res, 200, { units: await listServiceUnits() });
