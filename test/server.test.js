@@ -138,3 +138,24 @@ test('ayarlar: kaydetme, dil, şifre değiştirme ve sistem isteği kuyruğu', a
   assert.equal((await fetch(`${base}/api/stats`, { headers: { Cookie: other } })).status, 401);
   assert.equal((await fetch(`${base}/api/stats`, { headers: { Cookie: cookie } })).status, 200);
 });
+
+test('istek gövdesi nesne değilse ve Host tanınmıyorsa istek reddedilir', async (t) => {
+  const { base } = await startServer(t);
+  for (const body of ['0', 'false', '""', '[]', 'null']) {
+    const res = await fetch(`${base}/login`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: base }, body, signal: AbortSignal.timeout(5000) });
+    assert.equal(res.status, 400, body);
+  }
+  // DNS rebinding: Origin ve Host aynı ama sunucunun tanımadığı bir ad
+  const port = new URL(base).port;
+  const http = await import('node:http');
+  const status = await new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, path: '/login', method: 'POST', headers: { Host: `rebind.example:${port}`, Origin: `http://rebind.example:${port}`, 'Content-Type': 'application/json' } }, (res) => {
+      res.resume();
+      resolve(res.statusCode);
+    });
+    req.on('error', reject);
+    req.end('{}');
+  });
+  assert.equal(status, 403);
+  assert.equal((await fetch(`${base}/healthz`)).status, 200);
+});

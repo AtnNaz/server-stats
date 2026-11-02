@@ -1,9 +1,27 @@
 import os from 'node:os';
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, open } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { mapLimit, readText, round } from '../util.js';
 
 const MAX_COMMAND_LENGTH = 300;
+
+// Komut satırının yalnızca başı okunur: bir süreç çok büyük argv ile paneli yoramaz.
+async function readHead(file, bytes) {
+  const handle = await open(file, 'r');
+  try {
+    const buf = Buffer.alloc(bytes);
+    const { bytesRead } = await handle.read(buf, 0, bytes, 0);
+    return buf.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
+function commandLine(buf) {
+  let end = buf.length;
+  while (end > 0 && buf[end - 1] === 0) end--;
+  return buf.subarray(0, end).toString('utf8').replaceAll('\0', ' ');
+}
 
 function getconf(name, fallback) {
   try {
@@ -61,10 +79,10 @@ export function createProcessCollector({ top, showCommandLine }) {
   async function details(p) {
     const [status, cmdline] = await Promise.all([
       readText(`/proc/${p.pid}/status`).catch(() => ''),
-      showCommandLine ? readFile(`/proc/${p.pid}/cmdline`).catch(() => null) : null,
+      showCommandLine ? readHead(`/proc/${p.pid}/cmdline`, MAX_COMMAND_LENGTH * 4).catch(() => null) : null,
     ]);
     const uid = /^Uid:\s+(\d+)/m.exec(status)?.[1];
-    let command = cmdline?.length ? cmdline.toString('utf8').replace(/\0+$/, '').replaceAll('\0', ' ') : '';
+    let command = cmdline?.length ? commandLine(cmdline) : '';
     if (!command) command = p.pid === 2 || p.ppid === 2 ? `[${p.comm}]` : p.comm;
     return {
       pid: p.pid,

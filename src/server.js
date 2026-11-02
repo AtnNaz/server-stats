@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import os from 'node:os';
 import http from 'node:http';
 import https from 'node:https';
 import { readFileSync } from 'node:fs';
@@ -97,6 +98,26 @@ function sameOrigin(req) {
   }
 }
 
+// İsteğin Host başlığındaki ad (küçük harf, port olmadan; IPv6 köşeli parantezli).
+function requestHostname(req) {
+  try {
+    return new URL(`http://${req.headers.host}`).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+// Sunucunun kendi adları: localhost, makine adı ve arayüz adresleri (ör. yerel ağ ve Tailscale).
+function localHostnames() {
+  const names = new Set(['localhost', '127.0.0.1', '[::1]']);
+  const host = os.hostname().toLowerCase();
+  names.add(host).add(host.split('.')[0]).add(`${host.split('.')[0]}.local`);
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const a of list ?? []) names.add(a.family === 'IPv6' || a.family === 6 ? `[${a.address.split('%')[0].toLowerCase()}]` : a.address);
+  }
+  return names;
+}
+
 // Örnekleyiciyi etkileyen ayarlar değişince yeniden kurulur.
 const SAMPLER_KEYS = ['intervalSeconds', 'historyMinutes', 'services', 'disks', 'network'];
 
@@ -127,8 +148,16 @@ function main() {
 
   // systemd StateDirectory= bu değişkeni verir; geliştirme ortamında proje içindeki "state" kullanılır.
   const stateDir = process.env.STATE_DIRECTORY?.split(':')[0] ?? config.stateDirectory ?? path.join(path.dirname(PUBLIC_DIR), 'state');
-  const queueDir = path.join(stateDir, 'queue');
+  // systemd biriminde root'a ait kuyruk klasörü verilir; geliştirmede durum klasörü kullanılır.
+  const queueDir = process.env.SERVERHEALTH_QUEUE ?? path.join(stateDir, 'queue');
   const settingsStore = createSettingsStore(stateDir);
+  const stored = settingsStore.get();
+  if (stored.passwordHash && stored.passwordBase === undefined) {
+    // Eski sürümde arayüzden değiştirilmiş şifre: hangi config.json'a göre ayarlandığı kaydedilir.
+    settingsStore.setPasswordHash(stored.passwordHash, config.auth.passwordHash).catch((err) => console.error(err.message));
+  } else if (stored.passwordHash && stored.passwordBase !== config.auth.passwordHash) {
+    console.log("config.json'daki şifre sonradan değiştirilmiş; arayüzde ayarlanan şifre yerine o kullanılıyor.");
+  }
   let effective = effectiveConfig(config, settingsStore.get());
   setLanguage(effective.language);
 
@@ -157,11 +186,12 @@ function main() {
 
   // İstek dosyası önce geçici adla yazılıp taşınır; yardımcı yarım dosya görmez.
   // Yardımcı adları sıralayarak işler; aynı milisaniyedeki istekler sayaçla sırasını korur.
+  // Geçici dosya kuyruk klasörünün içine yazılır: farklı bağlama noktaları arasında taşıma yapılamaz.
   let enqueued = 0;
   async function enqueue(request) {
     await mkdir(queueDir, { recursive: true });
     const name = `${Date.now()}-${String(++enqueued).padStart(8, '0')}-${randomUUID()}.json`;
-    const tmp = path.join(stateDir, `.${name}.tmp`);
+    const tmp = path.join(queueDir, `.${name}.tmp`);
     await writeFile(tmp, JSON.stringify({ ...request, requestedAt: Date.now() }), { mode: 0o640 });
     await rename(tmp, path.join(queueDir, name));
   }
@@ -175,12 +205,35 @@ function main() {
       sendJson(req, res, 415, { code: 'content_type' });
       return null;
     }
+    let body;
     try {
-      return JSON.parse(await readBody(req)) ?? {};
+      body = JSON.parse(await readBody(req));
     } catch (err) {
       sendJson(req, res, err.status ?? 400, { code: 'bad_request' });
       return null;
     }
+    // Yalnızca JSON nesnesi kabul edilir; 0, false, "" gibi değerler de yanıtsız kalmaz.
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+      sendJson(req, res, 400, { code: 'bad_request' });
+      return null;
+    }
+    return body;
+  }
+
+  // DNS rebinding'e karşı: yalnızca sunucunun kendi adları ve allowedHosts kabul edilir.
+  const allowedHosts = new Set(config.allowedHosts.map((h) => h.toLowerCase()));
+  let knownHosts = null;
+  let knownHostsAt = 0;
+  function hostAllowed(req) {
+    if (allowedHosts.has('*')) return true;
+    const name = requestHostname(req);
+    if (!name) return false;
+    if (allowedHosts.has(name)) return true;
+    if (!knownHosts || Date.now() - knownHostsAt > 30_000) {
+      knownHosts = localHostnames();
+      knownHostsAt = Date.now();
+    }
+    return knownHosts.has(name);
   }
 
   function clientIp(req) {
@@ -203,7 +256,10 @@ function main() {
     const body = await readJsonBody(req, res);
     if (!body) return;
     const { username = '', password = '', remember = false } = body;
-    const result = await auth.login(username, password, clientIp(req));
+    const verifier = auth;
+    const result = await verifier.login(username, password, clientIp(req));
+    // Doğrulama sürerken şifre değiştiyse eski şifreyle oturum açılmaz.
+    if (result.ok && verifier !== auth) return sendJson(req, res, 401, { code: 'bad_credentials' });
     if (result.status === 429) {
       return sendJson(req, res, 429, { code: 'locked', retryAfter: result.retryAfter }, { 'Retry-After': String(result.retryAfter) });
     }
@@ -214,6 +270,10 @@ function main() {
 
   async function handle(req, res) {
     const { pathname } = new URL(req.url, 'http://localhost');
+    if (pathname !== '/healthz' && !hostAllowed(req)) {
+      return send(req, res, 403, TEXT, `Bilinmeyen adres: ${requestHostname(req) ?? '?'}. Bu adla erişmek için config.json içindeki allowedHosts listesine ekleyin.\n`);
+    }
+    if (isSecure(req)) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
 
     if (req.method === 'POST') {
       if (pathname === '/login') return handleLogin(req, res);
@@ -297,7 +357,7 @@ function main() {
     if (result.status === 429) return sendJson(req, res, 429, { code: 'locked', retryAfter: result.retryAfter });
     if (!result.ok) return sendJson(req, res, 401, { code: 'bad_password', attemptsLeft: result.attemptsLeft });
     const previous = effective;
-    await settingsStore.setPasswordHash(await hashPassword(next));
+    await settingsStore.setPasswordHash(await hashPassword(next), config.auth.passwordHash);
     await applySettings(previous);
     auth = createAuth(effective.auth);
     sessions.destroyOthers(req.headers.cookie);

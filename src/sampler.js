@@ -7,7 +7,7 @@ import { createDockerCollector } from './collectors/docker.js';
 import { createGpuCollector } from './collectors/gpu.js';
 import { createStorageCollector } from './collectors/storage.js';
 import { createSensorCollector } from './collectors/sensors.js';
-import { globsToRegExp } from './collectors/network.js';
+import { globMatcher } from './collectors/network.js';
 import { withTimeout } from './util.js';
 
 const COLLECT_TIMEOUT_MS = 2500;
@@ -41,7 +41,7 @@ export function createSampler(config) {
     network: createNetworkCollector(config.network),
     storage: createStorageCollector({
       smartFile: config.smart.file,
-      hidden: config.disks.hide.length ? globsToRegExp(config.disks.hide) : null,
+      hidden: config.disks.hide.length ? globMatcher(config.disks.hide) : null,
     }),
     sensors: createSensorCollector(),
     processes: createProcessCollector(config.processes),
@@ -63,15 +63,22 @@ export function createSampler(config) {
     lastErrors[name] = message;
   }
 
+  // Zaman aşımı yalnızca beklemeyi bırakır; önceki toplama bitmeden aynı toplayıcı yeniden
+  // başlatılmaz, böylece iptal edilemeyen okumalar turdan tura birikmez.
+  const running = new Set();
+
   async function tick() {
     const started = Date.now();
     const results = await Promise.all(
-      Object.entries(collectors).map(([name, c]) =>
-        withTimeout(c.collect(), COLLECT_TIMEOUT_MS, t('err.timeout')).then(
+      Object.entries(collectors).map(([name, c]) => {
+        if (running.has(name)) return [name, { error: t('err.timeout') }];
+        running.add(name);
+        const work = c.collect().finally(() => running.delete(name));
+        return withTimeout(work, COLLECT_TIMEOUT_MS, t('err.timeout')).then(
           (value) => [name, value],
           (err) => [name, { error: err.message }],
-        ),
-      ),
+        );
+      }),
     );
     for (const [name, value] of results) logChange(name, value.error ?? value.warning ?? null);
 

@@ -57,11 +57,37 @@ command -v systemctl >/dev/null || die "systemd bulunamadı."
 
 NODE_BIN="$(command -v node || true)"
 [[ -n $NODE_BIN ]] || die "Node.js bulunamadı. Node 18.15 veya üstünü kurun: $(pkg_hint nodejs)"
+NODE_BIN="$(readlink -f "$NODE_BIN")"
 "$NODE_BIN" -e 'const [a, b] = process.versions.node.split(".").map(Number); process.exit(a > 18 || (a === 18 && b >= 15) ? 0 : 1)' \
   || die "Node.js $("$NODE_BIN" -v) çok eski; en az 18.15 gerekli."
-case "$NODE_BIN" in
-  /root/*|/home/*) echo "Uyarı: node $NODE_BIN konumunda; servis kullanıcısı erişemeyebilir. Sistem geneline kurulu bir Node önerilir." >&2 ;;
-esac
+
+# Yolun kendisi ve tüm üst klasörleri verilen sahiplere ait ve başkalarına yazılamaz mı?
+# $2: izinli kullanıcı kimlikleri, $3: izinli grup kimlikleri (grup yazma izni için).
+safe_path() {
+  local p=$1 owner group mode
+  while :; do
+    read -r owner group mode < <(stat -c '%u %g %a' "$p") || return 1
+    [[ " $2 " == *" $owner "* ]] || return 1
+    (( (8#$mode & 8#002) == 0 )) || return 1
+    (( (8#$mode & 8#020) == 0 )) || [[ " $3 " == *" $group "* ]] || return 1
+    [[ $p == / ]] && return 0
+    p=$(dirname "$p")
+  done
+}
+
+# Root servisleri bu node'u çalıştırır; root dışında biri değiştirebiliyorsa root yetkisi alır.
+safe_path "$NODE_BIN" "0" "0" \
+  || die "node ($NODE_BIN) ya da bulunduğu klasörlerden biri root dışında birine ait veya yazılabilir (ör. nvm, n). Sistem paketinden kurulu bir Node kullanın: $(pkg_hint nodejs)"
+
+# Kopyalanacak kod root olarak çalışacak: kaynak klasörü yalnızca root'a ya da kurulumu yapan
+# yöneticiye ait olmalı (ör. /tmp altında başkasının açtığı bir klasör kabul edilmez).
+ADMIN_UID=${SUDO_UID:-0}
+ADMIN_GID=${SUDO_GID:-0}
+SOURCES=("$SRC_DIR/src" "$SRC_DIR/public" "$SRC_DIR/bin" "$SRC_DIR/deploy" "$SRC_DIR/package.json" "$SRC_DIR/config.example.json" "$SRC_DIR/README.md" "$SRC_DIR/LICENSE")
+safe_path "$SRC_DIR" "0 $ADMIN_UID" "0 $ADMIN_GID" \
+  || die "$SRC_DIR ya da üst klasörlerinden biri başka bir kullanıcıya ait veya herkese yazılabilir. Projeyi kendi ev klasörünüze indirip oradan kurun (README: Kurulum)."
+UNSAFE="$(find "${SOURCES[@]}" \( -type l -o -perm -0002 -o \( ! -uid 0 ! -uid "$ADMIN_UID" \) -o \( -perm -0020 ! -gid 0 ! -gid "$ADMIN_GID" \) \) -print -quit)"
+[[ -z $UNSAFE ]] || die "Güvenli olmayan dosya: $UNSAFE (sembolik bağ, başka kullanıcıya ait ya da başkalarına yazılabilir)."
 
 if ! id "$SVC_USER" &>/dev/null; then
   useradd --system --no-create-home --home-dir /nonexistent --shell "$(command -v nologin || echo /bin/false)" "$SVC_USER"
@@ -73,10 +99,11 @@ if [[ "$SRC_DIR" != "$APP_DIR" ]]; then
   rm -rf "$APP_DIR/src" "$APP_DIR/public" "$APP_DIR/bin" "$APP_DIR/deploy"
   cp -R "$SRC_DIR/src" "$SRC_DIR/public" "$SRC_DIR/bin" "$SRC_DIR/deploy" "$APP_DIR/"
   install -m 0644 "$SRC_DIR/package.json" "$SRC_DIR/config.example.json" "$SRC_DIR/README.md" "$SRC_DIR/LICENSE" "$APP_DIR/"
-  chown -R root:root "$APP_DIR"
-  chmod -R u=rwX,go=rX "$APP_DIR"
   echo "Uygulama dosyaları kopyalandı: $APP_DIR"
 fi
+# Yerinde kurulumda da kod root'a ait olmalı; root servisleri bu dosyaları çalıştırır.
+chown -R root:root "$APP_DIR"
+chmod -R u=rwX,go=rX "$APP_DIR"
 
 install -d -m 0750 -o root -g "$SVC_USER" "$CONF_DIR"
 if [[ ! -f $CONF_FILE ]]; then
@@ -132,13 +159,16 @@ else
   rm -f "$GPU_DROPIN"
 fi
 
-# Sistem ayarları yardımcısı: panel /var/lib/serverhealth-panel/queue'ya istek bırakır,
+# Sistem ayarları yardımcısı: panel /var/lib/serverhealth-queue'ya istek bırakır,
 # path birimi bunu görünce root yardımcısını çalıştırır; saatlik zamanlayıcı durumu tazeler.
 for unit in serverhealth-helper.service serverhealth-helper.path serverhealth-helper.timer; do
   sed "s|@NODE@|$NODE_BIN|g" "$APP_DIR/deploy/$unit" > "/etc/systemd/system/$unit"
   chmod 0644 "/etc/systemd/system/$unit"
 done
-install -d -m 0750 -o "$SVC_USER" -g "$SVC_USER" /var/lib/serverhealth-panel /var/lib/serverhealth-panel/queue
+# Kuyruk root'a aittir; panel içine dosya bırakabilir ama klasörün kendisini değiştiremez.
+install -d -m 0730 -o root -g "$SVC_USER" /var/lib/serverhealth-queue
+install -d -m 0750 -o "$SVC_USER" -g "$SVC_USER" /var/lib/serverhealth-panel
+rmdir /var/lib/serverhealth-panel/queue 2>/dev/null || true # eski sürümlerin kuyruğu
 
 # SMART disk sağlığı: smartctl root ister, bu yüzden ayrı bir zamanlayıcı 10 dakikada bir
 # /var/lib/serverhealth/smart.json dosyasını yazar; panel bu dosyayı yetkisiz okur.

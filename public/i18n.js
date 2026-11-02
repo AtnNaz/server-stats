@@ -357,6 +357,7 @@
       'hist.err.apt_upgrade_failed': 'paketler kurulamadı',
       'hist.err.dnf_upgrade_failed': 'paketler kurulamadı',
       'hist.err.invalid_file': 'geçersiz dosya',
+      'hist.err.invalid_queue': 'geçersiz kuyruk klasörü',
       'hist.err.invalid_request': 'geçersiz istek',
       'hist.err.unreadable': 'okunamadı',
 
@@ -742,6 +743,7 @@
       'hist.err.apt_upgrade_failed': 'could not install the packages',
       'hist.err.dnf_upgrade_failed': 'could not install the packages',
       'hist.err.invalid_file': 'invalid file',
+      'hist.err.invalid_queue': 'invalid queue folder',
       'hist.err.invalid_request': 'invalid request',
       'hist.err.unreadable': 'unreadable',
       'login.title': 'Sign in · Server Health',

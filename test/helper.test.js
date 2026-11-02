@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, symlinkSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, symlinkSync, existsSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createHelper } from '../bin/serverhealth-helper.js';
@@ -52,7 +52,7 @@ test('bekleyen güncellemeler ve zamanlayıcı ifadeleri', () => {
 test('yardımcı: kuyruğu işler, dosyaları yazar, zararlı istekleri reddeder', async (t) => {
   const root = mkdtempSync(path.join(tmpdir(), 'serverhealth-helper-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const queue = path.join(root, 'var/lib/serverhealth-panel/queue');
+  const queue = path.join(root, 'var/lib/serverhealth-queue');
   mkdirSync(queue, { recursive: true });
   const put = (name, obj) => writeFileSync(path.join(queue, name), JSON.stringify(obj));
 
@@ -110,4 +110,44 @@ test('yardımcı: kuyruğu işler, dosyaları yazar, zararlı istekleri reddeder
   await helper.processQueue();
   assert.equal(existsSync(path.join(units, 'serverhealth-reboot.timer')), false);
   assert.ok(helper.commands.includes('/usr/bin/systemctl disable --now serverhealth-reboot.timer'));
+});
+
+test('doğrulayıcı Object.prototype adlarını alan olarak kabul etmez', () => {
+  for (const key of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+    const input = JSON.parse(`{"${key}": {"x": 1}}`);
+    assert.ok(validateRequest({ type: 'settings', settings: input }).errors, key);
+    assert.ok(validateRequest({ type: 'settings', settings: { scheduledReboot: input } }).errors, `scheduledReboot.${key}`);
+  }
+});
+
+const PLATFORM = { packageManager: 'apt', systemctl: '/usr/bin/systemctl', autoUpdates: true, updateNow: true, smartTests: true, unattendedInstalled: true };
+
+test('yardımcı: sembolik bağ olan kuyruk klasörü işlenmez, hedefindeki dosyalar silinmez', async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'serverhealth-helper-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const target = path.join(root, 'etc/onemli');
+  mkdirSync(target, { recursive: true });
+  writeFileSync(path.join(target, 'config.json'), '{}');
+  mkdirSync(path.join(root, 'var/lib'), { recursive: true });
+  symlinkSync(target, path.join(root, 'var/lib/serverhealth-queue'));
+
+  const helper = createHelper({ root, dryRun: true, now: () => 1700000000000, platformOverride: PLATFORM });
+  await helper.processQueue();
+  assert.ok(existsSync(path.join(target, 'config.json'))); // root başka klasördeki dosyayı silmedi
+  assert.match(readFileSync(path.join(root, 'var/lib/serverhealth/actions.jsonl'), 'utf8'), /invalid_queue/);
+});
+
+test('yardımcı: yarım kalmış eski geçici dosyalar temizlenir', async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'serverhealth-helper-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const queue = path.join(root, 'var/lib/serverhealth-queue');
+  mkdirSync(queue, { recursive: true });
+  const stale = path.join(queue, '.1.json.tmp');
+  writeFileSync(stale, '{');
+  utimesSync(stale, new Date(1600000000000), new Date(1600000000000));
+  writeFileSync(path.join(queue, '2.json'), JSON.stringify({ type: 'action', action: 'refresh' }));
+
+  const helper = createHelper({ root, dryRun: true, now: () => 1700000000000, platformOverride: PLATFORM });
+  await helper.processQueue();
+  assert.deepEqual(readdirSync(queue), []);
 });

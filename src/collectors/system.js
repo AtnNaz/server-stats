@@ -2,7 +2,7 @@ import os from 'node:os';
 import { t } from '../i18n.js';
 import { statfs } from 'node:fs/promises';
 import { percent, readText, round, withTimeout } from '../util.js';
-import { globsToRegExp } from './network.js';
+import { globMatcher } from './network.js';
 
 // Gerçek depolama taşıyan dosya sistemleri. proc, tmpfs, overlay (Docker), squashfs (snap) gibi sanal olanlar gösterilmez.
 const DISK_FS = new Set([
@@ -106,12 +106,14 @@ async function readMounts() {
 }
 
 export function createSystemCollector({ hide = [] } = {}) {
-  const hidden = hide.length ? globsToRegExp(hide) : null;
+  const hidden = hide.length ? globMatcher(hide) : null;
   let prevCpu = null;
   let staticInfo = null;
   // Yanıt vermeyen bir ağ diski (ör. kopmuş NFS) iş parçacığı havuzunu tüketmesin diye
-  // önceki statfs çağrısı bitmeden aynı bağlama noktası tekrar sorgulanmaz.
+  // önceki statfs çağrısı bitmeden aynı bağlama noktası tekrar sorgulanmaz ve aynı anda
+  // en çok MAX_PENDING_STATFS çağrı askıda kalabilir (giriş doğrulaması da bu havuzu kullanır).
   const pendingStatfs = new Set();
+  const MAX_PENDING_STATFS = 2;
 
   async function hostInfo() {
     if (!staticInfo) {
@@ -131,7 +133,7 @@ export function createSystemCollector({ hide = [] } = {}) {
 
   async function diskUsage(disk) {
     const base = { mount: disk.mount, source: disk.source, fstype: disk.fstype, readOnly: disk.readOnly, alsoMounted: disk.alsoMounted };
-    if (pendingStatfs.has(disk.mount)) return { ...base, error: t('err.notResponding') };
+    if (pendingStatfs.has(disk.mount) || pendingStatfs.size >= MAX_PENDING_STATFS) return { ...base, error: t('err.notResponding') };
     pendingStatfs.add(disk.mount);
     const request = statfs(disk.mount).finally(() => pendingStatfs.delete(disk.mount));
     try {

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { hashPassword, parseHash, verifyPassword, createAuth } from '../src/auth.js';
 import { loadConfig } from '../src/config.js';
+import { effectiveConfig } from '../src/settings.js';
 import { createSessions, parseCookies } from '../src/sessions.js';
 
 const basic = (user, pass) => `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}`;
@@ -80,4 +81,19 @@ test('yapılandırma doğrulanır', async (t) => {
 
   writeFileSync(file, JSON.stringify({ port: 70000, auth: { username: 'admin', passwordHash: 'duz' }, services: ['--root'] }));
   assert.throws(() => loadConfig(file), (err) => /port/.test(err.message) && /passwordHash/.test(err.message) && /services/.test(err.message));
+});
+
+test('adres değiştirerek kilitten kaçılamaz: toplam 30 hatadan sonra giriş kapanır', async () => {
+  const auth = createAuth({ username: 'admin', passwordHash: await hashPassword('dogru-sifre', { N: 1024, r: 8, p: 1 }) });
+  for (let i = 0; i < 30; i++) assert.equal((await auth.login('admin', 'yanlis', `127.0.0.${i + 2}`)).status, 401);
+  const next = await auth.login('admin', 'dogru-sifre', '127.0.1.1'); // yeni bir adres bile
+  assert.equal(next.status, 429);
+  assert.ok(next.retryAfter > 0);
+});
+
+test('config.json sonradan değişirse arayüzde ayarlanan şifre geçersiz olur', () => {
+  const config = { auth: { username: 'admin', passwordHash: 'A' }, disks: {}, network: {} };
+  assert.equal(effectiveConfig(config, { passwordHash: 'B', passwordBase: 'A' }).auth.passwordHash, 'B');
+  const reset = { ...config, auth: { username: 'admin', passwordHash: 'C' } }; // hash-password.js --set
+  assert.equal(effectiveConfig(reset, { passwordHash: 'B', passwordBase: 'A' }).auth.passwordHash, 'C');
 });

@@ -15,7 +15,8 @@ function validateObject(input, fields) {
   const value = {};
   if (input === null || typeof input !== 'object' || Array.isArray(input)) return { errors: ['invalid'], value };
   for (const [key, v] of Object.entries(input)) {
-    const check = fields[key];
+    // Object.prototype'tan gelen adlar (constructor, toString…) denetçi sayılmaz.
+    const check = Object.hasOwn(fields, key) ? fields[key] : null;
     if (check && check(v)) value[key] = v;
     else errors.push(key);
   }

@@ -84,7 +84,7 @@ Panel kurulduğu makineyi kendisi tanır; sunucuya özgü bir ayar gerektirmez:
 
 ```bash
 sudo systemctl disable --now serverhealth serverhealth-smart.timer serverhealth-helper.path serverhealth-helper.timer serverhealth-reboot.timer serverhealth-smarttest-short.timer serverhealth-smarttest-long.timer
-sudo rm -rf /opt/serverhealth /etc/systemd/system/serverhealth* /etc/serverhealth /var/lib/serverhealth /var/lib/serverhealth-panel /etc/apt/apt.conf.d/52serverhealth
+sudo rm -rf /opt/serverhealth /etc/systemd/system/serverhealth* /etc/serverhealth /var/lib/serverhealth /var/lib/serverhealth-panel /var/lib/serverhealth-queue /etc/apt/apt.conf.d/52serverhealth
 sudo systemctl daemon-reload
 sudo userdel serverhealth
 ```
@@ -100,6 +100,7 @@ Ayarlar `/etc/serverhealth/config.json` dosyasındadır. Değişiklikten sonra `
 | `intervalSeconds` | `3` | Verilerin kaç saniyede bir toplanacağı (1–60) |
 | `historyMinutes` | `10` | Grafiklerde gösterilecek süre (dakika) |
 | `trustProxy` | `false` | Ters vekil (nginx) arkasındaysa `true`; kilitleme için istemci IP'si `X-Real-IP` başlığından alınır |
+| `allowedHosts` | `[]` | Panelin kabul ettiği ek adlar (ör. `["durum.ornek.com"]`). Sunucunun kendi IP adresleri, makine adı ve `localhost` her zaman kabul edilir; başka adlarla gelen istekler (DNS rebinding) reddedilir. `["*"]` denetimi kapatır |
 | `auth.username` | `"admin"` | Panel kullanıcı adı |
 | `auth.passwordHash` | — | Şifrenin scrypt hash'i (düz şifre yazmayın, aşağıya bakın) |
 | `tls.cert`, `tls.key` | `""` | Doğrudan HTTPS için sertifika ve anahtar dosyaları |
@@ -125,6 +126,8 @@ sudo systemctl restart serverhealth
 
 Kullanıcı adını da değiştirmek için `--user yeniad` ekleyin. `--set` olmadan çalıştırırsanız hash yalnızca ekrana yazılır.
 
+Şifre panelden (Ayarlar → Güvenlik) de değiştirilebilir. Şifreyi unutursanız yukarıdaki komut yine işe yarar: `config.json` sonradan değiştirilince panelde ayarlanmış şifre geçersiz olur ve `config.json`'daki şifre kullanılır.
+
 ## API
 
 Panelin kullandığı veriler JSON olarak alınabilir. Betiklerden kullanıcı adı ve şifreyle (HTTP Basic Auth) erişin:
@@ -139,7 +142,7 @@ Oturum yoksa `/api/stats` 401 döndürür; sayfa istekleri ise giriş ekranına 
 
 ### nginx arkasında (önerilen)
 
-`config.json` içinde `"host": "127.0.0.1"` ve `"trustProxy": true` yapın, sonra nginx'e şu sunucu bloğunu ekleyin:
+`config.json` içinde `"host": "127.0.0.1"`, `"trustProxy": true` ve `"allowedHosts": ["durum.ornek.com"]` yapın, sonra nginx'e şu sunucu bloğunu ekleyin:
 
 ```nginx
 server {
@@ -154,6 +157,7 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
 ```
@@ -198,8 +202,10 @@ Let's Encrypt anahtarlarını yalnızca root okuyabildiği için systemd bunlar�
 ## Güvenlik notları
 
 - Şifre yapılandırmada scrypt ile hash'lenmiş olarak durur; karşılaştırma sabit zamanlıdır.
-- Aynı IP'den 15 dakika içinde 5 hatalı denemeden sonra o IP 15 dakika kilitlenir; giriş ekranı kalan süreyi gösterir. Denemeler `journalctl -u serverhealth` günlüğüne yazılır.
-- Oturum çerezi `HttpOnly` ve `SameSite=Strict`'tir; HTTPS üzerinde `Secure` olarak işaretlenir. Giriş ve çıkış istekleri yalnızca panelin kendi sayfasından kabul edilir.
+- Aynı IP'den 15 dakika içinde 5 hatalı denemeden sonra o IP 15 dakika kilitlenir; giriş ekranı kalan süreyi gösterir. Tüm adreslerden toplam 30 hatalı deneme olursa giriş 15 dakika tamamen kapanır (adres değiştirerek şifre denemeye karşı). Denemeler `journalctl -u serverhealth` günlüğüne yazılır.
+- Oturum çerezi `HttpOnly` ve `SameSite=Strict`'tir; HTTPS üzerinde `Secure` olarak işaretlenir ve HSTS başlığı gönderilir. Giriş ve çıkış istekleri yalnızca panelin kendi sayfasından ve tanınan adlardan (`allowedHosts`) kabul edilir.
+- Root yardımcısına giden istek kuyruğu `/var/lib/serverhealth-queue` root'a aittir: panel içine dosya bırakabilir ama klasörü değiştiremez. Yardımcı dosyaları sembolik bağ izlemeden açar ve her isteği yeniden doğrular.
+- Kurulum betiği, root servislerinin çalıştıracağı `node` ikilisinin ve kaynak klasörünün başka kullanıcılarca değiştirilemediğini denetler; değilse kurulumu durdurur.
 - Servis yetkisiz `serverhealth` kullanıcısıyla, dosya sistemine yazma izni olmadan çalışır (systemd sıkılaştırması: `ProtectSystem=strict`, `NoNewPrivileges` vb.).
 - **SMART:** Disk sağlığını okumak root yetkisi ister. Panel bunu kendisi yapmaz. `smartmontools` kuruluysa kurulum betiği `serverhealth-smart.timer` zamanlayıcısını kurar: her 10 dakikada bir root olarak `smartctl` çalıştırır, sonucu `/var/lib/serverhealth/smart.json` dosyasına yazar, panel bu dosyayı yetkisiz okur. Toplayıcının ağ erişimi yoktur, dosya sistemine yalnızca bu klasöre yazabilir ve uykudaki diskleri uyandırmaz.
 - NVIDIA kartı olan sunucularda kurulum betiği `/etc/systemd/system/serverhealth.service.d/gpu.conf` dosyasını yazar: servis `/dev` altında yalnızca `/dev/nvidiactl` ve `/dev/nvidiaN` aygıtlarına (ve `/dev/null` gibi temel aygıtlara) erişebilir.

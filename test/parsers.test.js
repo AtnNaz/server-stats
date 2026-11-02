@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import { parseCpuStat, cpuUsage, parseMeminfo, memoryFromMeminfo, parseMounts, selectDisks } from '../src/collectors/system.js';
-import { parseNetDev, parseSockets, groupPorts, hexToIPv6, globsToRegExp, exposure } from '../src/collectors/network.js';
+import { parseNetDev, parseSockets, groupPorts, hexToIPv6, globMatcher, exposure } from '../src/collectors/network.js';
 import { parseProcStat } from '../src/collectors/processes.js';
 import { parseSystemctlShow, toService } from '../src/collectors/services.js';
 import { summarizePorts } from '../src/collectors/docker.js';
@@ -76,7 +76,7 @@ test('gizlenen bağlama noktaları (/boot, /boot/efi) disk listesine girmez', ()
       '/dev/sdc1 /mnt/yedek-eski ext4 rw 0 0',
     ].join('\n'),
   );
-  const hidden = globsToRegExp(['/boot', '/boot/efi', '/mnt/yedek*']);
+  const hidden = globMatcher(['/boot', '/boot/efi', '/mnt/yedek*']);
   assert.deepEqual(selectDisks(mounts, hidden).map((d) => d.mount), ['/', '/mnt/data']);
   assert.equal(selectDisks(mounts).length, 5); // gizleme listesi yoksa hepsi görünür
 });
@@ -132,13 +132,13 @@ test('IPv6 adresleri kısaltılarak yazılır', { skip: !littleEndian }, () => {
 });
 
 test('arayüz gizleme kalıpları', () => {
-  const re = globsToRegExp(['lo', 'veth*', 'br-*']);
+  const re = globMatcher(['lo', 'veth*', 'br-*']);
   assert.ok(re.test('lo'));
   assert.ok(re.test('veth12ab'));
   assert.ok(re.test('br-1a2b'));
   assert.ok(!re.test('eth0'));
   assert.ok(!re.test('lo0x'));
-  assert.ok(!globsToRegExp([]).test('eth0'));
+  assert.ok(!globMatcher([]).test('eth0'));
 });
 
 test('süreç adı boşluk ve parantez içerse de /proc/[pid]/stat doğru okunur', () => {
@@ -222,4 +222,14 @@ test('nvidia-smi çıktısı okunur; virgüllü ad ve desteklenmeyen değerler d
 test('çalıştırılabilir dosya PATH içinde aranır', () => {
   assert.equal(findExecutable('node', path.dirname(process.execPath)), process.execPath);
   assert.equal(findExecutable('kesinlikle-olmayan-arac', '/usr/bin:/bin'), null);
+});
+
+test('kalıp eşleme geri izlemesizdir: çok yıldızlı kalıp uzun yolda takılmaz', () => {
+  const m = globMatcher(['/mnt/*a*a*a*a*a*a*b']);
+  const started = Date.now();
+  assert.equal(m.test(`/mnt/${'a'.repeat(4000)}`), false);
+  assert.ok(Date.now() - started < 500);
+  assert.ok(globMatcher(['/mnt/*/yedek*']).test('/mnt/disk1/yedek-2026'));
+  assert.ok(!globMatcher(['/mnt/*/yedek*']).test('/mnt/disk1/diger'));
+  assert.ok(globMatcher(['*']).test(''));
 });

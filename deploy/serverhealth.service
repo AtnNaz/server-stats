@@ -12,9 +12,14 @@ ExecStart=@NODE@ /opt/serverhealth/src/server.js --config /etc/serverhealth/conf
 Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production
-# Arayüzden değiştirilen ayarlar ve root yardımcısına giden istek kuyruğu burada durur.
+# Yavaş disk ve /proc okumaları giriş doğrulamasını (scrypt) bekletmesin diye iş parçacığı havuzu büyütülür.
+Environment=UV_THREADPOOL_SIZE=8
+# Arayüzden değiştirilen ayarlar burada durur.
 StateDirectory=serverhealth-panel
 StateDirectoryMode=0750
+# Root yardımcısına giden istek kuyruğu (root'a ait, panel yalnızca içine yazabilir).
+Environment=SERVERHEALTH_QUEUE=/var/lib/serverhealth-queue
+ReadWritePaths=-/var/lib/serverhealth-queue
 
 # Doğrudan HTTPS için (README'deki "Doğrudan HTTPS" bölümüne bakın):
 #LoadCredential=tls.cert:/etc/letsencrypt/live/ornek.com/fullchain.pem

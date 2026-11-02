@@ -2,7 +2,7 @@
 Description=Sunucu Durumu - panel isteklerini izle
 
 [Path]
-DirectoryNotEmpty=/var/lib/serverhealth-panel/queue
+DirectoryNotEmpty=/var/lib/serverhealth-queue
 Unit=serverhealth-helper.service
 
 [Install]

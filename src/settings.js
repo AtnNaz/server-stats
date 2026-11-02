@@ -42,7 +42,7 @@ export function validatePanelSettings(input) {
           break;
         }
         for (const [name, pair] of Object.entries(v)) {
-          if (limits[name] && isPair(pair, limits[name])) t[name] = pair;
+          if (Object.hasOwn(limits, name) && isPair(pair, limits[name])) t[name] = pair;
           else errors.push(`thresholds.${name}`);
         }
         value.thresholds = t;
@@ -88,9 +88,11 @@ export function createSettingsStore(stateDir) {
       await save();
       return structuredClone(data);
     },
-    async setPasswordHash(hash) {
+    // base: değiştirildiği andaki config.json hash'i. config.json sonradan değişirse
+    // (hash-password.js ile sıfırlama) arayüzde ayarlanan şifre geçersiz sayılır.
+    async setPasswordHash(hash, base) {
       if (!parseHash(hash)) throw new Error('invalid hash');
-      data = { ...data, passwordHash: hash };
+      data = { ...data, passwordHash: hash, passwordBase: base };
       await save();
     },
   };
@@ -105,7 +107,7 @@ export function effectiveConfig(config, settings) {
     historyMinutes: settings.historyMinutes ?? config.historyMinutes,
     services: settings.services ?? config.services,
     thresholds: { ...DEFAULT_THRESHOLDS, ...settings.thresholds },
-    auth: { ...config.auth, ...(settings.passwordHash && { passwordHash: settings.passwordHash }) },
+    auth: { ...config.auth, ...(settings.passwordHash && settings.passwordBase === config.auth.passwordHash && { passwordHash: settings.passwordHash }) },
     disks: { ...config.disks, ...(settings.hideDisks && { hide: settings.hideDisks }) },
     network: { ...config.network, ...(settings.hideInterfaces && { hideInterfaces: settings.hideInterfaces }) },
   };

@@ -9,7 +9,7 @@
 //   serverhealth-helper.js --smart-test short  bütün disklerde kısa SMART testini başlat
 //   --root DİZİN --dry-run                      testler için: dosyaları DİZİN altına yaz, komut çalıştırma
 import { execFile, spawn } from 'node:child_process';
-import { readFile, writeFile, readdir, lstat, unlink, rename, mkdir, stat, appendFile, access, constants } from 'node:fs/promises';
+import { readFile, writeFile, readdir, lstat, unlink, rename, mkdir, stat, appendFile, access, open, constants } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -23,9 +23,12 @@ import {
 
 const APP_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MAX_REQUEST = 16 * 1024;
+// Kuyruk, root'a ait /var/lib altında durur; panel kullanıcısı klasörün kendisini değiştiremez.
+const QUEUE_DIR = '/var/lib/serverhealth-queue';
+const STALE_TEMP_MS = 10 * 60 * 1000;
 
 function parseArgs(argv) {
-  const opts = { root: '', dryRun: false, queue: '/var/lib/serverhealth-panel/queue', smartTest: null };
+  const opts = { root: '', dryRun: false, queue: QUEUE_DIR, smartTest: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--root') opts.root = argv[++i];
@@ -46,7 +49,7 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
     status: P('/var/lib/serverhealth/system.json'),
     history: P('/var/lib/serverhealth/actions.jsonl'),
     updateLog: P('/var/lib/serverhealth/update.log'),
-    queue: queue ? (root ? path.join(root, queue) : queue) : P('/var/lib/serverhealth-panel/queue'),
+    queue: queue ? (root ? path.join(root, queue) : queue) : P(QUEUE_DIR),
   };
   const commands = []; // --dry-run'da çalıştırılacak komutların kaydı (testler için)
 
@@ -307,20 +310,66 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
     return status;
   }
 
+  // Bir kuyruk dosyasını sembolik bağı izlemeden açar; tür ve boyut açılan dosyanın kendisinde
+  // denetlenir, böylece denetimle okuma arasında dosya değiştirilemez.
+  async function readRequestFile(file) {
+    let handle;
+    try {
+      handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    } catch (err) {
+      if (err.code === 'ELOOP') return { invalid: true };
+      throw err;
+    }
+    try {
+      const info = await handle.stat();
+      if (!info.isFile() || info.size > MAX_REQUEST) return { invalid: true };
+      const buf = Buffer.alloc(MAX_REQUEST + 1);
+      const { bytesRead } = await handle.read(buf, 0, buf.length, 0);
+      if (bytesRead > MAX_REQUEST) return { invalid: true };
+      return { text: buf.subarray(0, bytesRead).toString('utf8') };
+    } finally {
+      await handle.close();
+    }
+  }
+
+  // Panelin yarıda bıraktığı geçici dosyalar (.tmp) kuyruğu dolu gösterip yardımcıyı sürekli
+  // tetiklemesin: yeni olanların bitmesi biraz beklenir, eskileri silinir.
+  async function settleQueue() {
+    for (let attempt = 0; ; attempt++) {
+      const names = await readdir(files.queue);
+      let fresh = false;
+      for (const name of names.filter((n) => !n.endsWith('.json'))) {
+        const file = path.join(files.queue, name);
+        const info = await lstat(file).catch(() => null);
+        if (!info || info.isDirectory()) continue;
+        if (info.isFile() && now() - info.mtimeMs < STALE_TEMP_MS && attempt < 5) fresh = true;
+        else await unlink(file).catch(() => {});
+      }
+      if (!fresh || dryRun) return names.filter((n) => n.endsWith('.json')).sort();
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+
   // Kuyruktaki istek dosyalarını okur. Sembolik bağlantı ve büyük dosyalar reddedilir:
   // panel ele geçirilse bile yardımcıya başka bir dosyayı (ör. /etc/shadow) okutamaz.
   async function readQueue() {
-    const names = (await readdir(files.queue).catch(() => [])).filter((n) => n.endsWith('.json')).sort();
+    const dirInfo = await lstat(files.queue).catch(() => null);
+    if (!dirInfo) return [];
+    if (!dirInfo.isDirectory()) {
+      await record({ type: 'rejected', ok: false, message: 'invalid_queue' });
+      return [];
+    }
+    const names = await settleQueue();
     const requests = [];
     for (const name of names) {
       const file = path.join(files.queue, name);
       try {
-        const info = await lstat(file);
-        if (!info.isFile() || info.size > MAX_REQUEST) {
+        const { invalid, text } = await readRequestFile(file);
+        if (invalid) {
           await record({ type: 'rejected', ok: false, message: 'invalid_file' });
           continue;
         }
-        const { errors, request } = validateRequest(JSON.parse(await readFile(file, 'utf8')));
+        const { errors, request } = validateRequest(JSON.parse(text));
         if (errors) await record({ type: 'rejected', ok: false, message: 'invalid_request' });
         else requests.push(request);
       } catch {

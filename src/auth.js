@@ -8,6 +8,8 @@ const MAX_FAILURES = 5;
 const LOCK_MS = 15 * 60 * 1000;
 const CACHE_MS = 5 * 60 * 1000;
 const MAX_CONCURRENT_VERIFICATIONS = 4;
+// Adres değiştirerek kilitten kaçılmasın diye tüm adreslerin toplam hatalı denemesi de sınırlanır.
+const MAX_TOTAL_FAILURES = 30;
 
 function scryptAsync(password, salt, keylen, { N, r, p }) {
   return new Promise((resolve, reject) => {
@@ -46,6 +48,7 @@ export function createAuth({ username, passwordHash }) {
   const failures = new Map(); // ip -> { count, since, lockedUntil }
   const verified = new Map(); // sha256(token) -> geçerlilik bitişi; pano her 3 sn'de scrypt çalıştırmasın diye
   let inFlight = 0;
+  let total = { count: 0, since: 0 };
 
   setInterval(() => {
     const now = Date.now();
@@ -53,7 +56,12 @@ export function createAuth({ username, passwordHash }) {
     for (const [k, exp] of verified) if (exp < now) verified.delete(k);
   }, 60_000).unref();
 
+  const totalLockedFor = (now) =>
+    total.count >= MAX_TOTAL_FAILURES && now - total.since < LOCK_MS ? Math.ceil((total.since + LOCK_MS - now) / 1000) : 0;
+
   function registerFailure(ip, now) {
+    if (now - total.since > LOCK_MS) total = { count: 0, since: now };
+    if (++total.count === MAX_TOTAL_FAILURES) console.warn(`${MAX_TOTAL_FAILURES} hatalı deneme; giriş ${LOCK_MS / 60000} dakika kapatıldı`);
     let f = failures.get(ip);
     if (!f || now - f.since > LOCK_MS) f = { count: 0, since: now, lockedUntil: 0 };
     f.count++;
@@ -75,7 +83,7 @@ export function createAuth({ username, passwordHash }) {
   // Döner: { ok: true } | { ok: false, status: 401, attemptsLeft } | { ok: false, status: 429, retryAfter }
   async function login(user, pass, ip) {
     const now = Date.now();
-    const locked = lockedFor(ip, now);
+    const locked = lockedFor(ip, now) || totalLockedFor(now);
     if (locked) return { ok: false, status: 429, retryAfter: locked };
     if (inFlight >= MAX_CONCURRENT_VERIFICATIONS) return { ok: false, status: 429, retryAfter: 1 };
 

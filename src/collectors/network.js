@@ -7,9 +7,33 @@ const TCP_LISTEN = '0A';
 const UDP_UNCONNECTED = '07';
 const EXPOSURE_RANK = { local: 0, specific: 1, all: 2 };
 
-export function globsToRegExp(patterns) {
-  const parts = patterns.map((p) => p.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*'));
-  return new RegExp(`^(?:${parts.join('|')})$`);
+// '*' içeren basit kalıp eşleme. Düzenli ifade yerine geri izlemesiz döngü kullanılır;
+// çok yıldızlı bir kalıp uzun bir bağlama yolunda olay döngüsünü kilitleyemez.
+export function globMatch(pattern, text) {
+  let p = 0;
+  let s = 0;
+  let star = -1;
+  let mark = 0;
+  while (s < text.length) {
+    if (p < pattern.length && pattern[p] === '*') {
+      star = p++;
+      mark = s;
+    } else if (p < pattern.length && pattern[p] === text[s]) {
+      p++;
+      s++;
+    } else if (star !== -1) {
+      p = star + 1;
+      s = ++mark;
+    } else {
+      return false;
+    }
+  }
+  while (pattern[p] === '*') p++;
+  return p === pattern.length;
+}
+
+export function globMatcher(patterns) {
+  return { test: (text) => patterns.some((p) => globMatch(p, text)) };
 }
 
 export function parseNetDev(text) {
@@ -87,13 +111,17 @@ export function exposure(address) {
 // Aynı port birden çok adreste dinleniyorsa (0.0.0.0 ve ::) tek satırda birleştirilir.
 export function groupPorts(sockets, ephemeral = null) {
   const groups = new Map();
+  const seen = new Set(); // aynı adres tekrar eklenmez; dizi taraması binlerce sokette yavaşlardı
   for (const s of sockets) {
     // Geçici port aralığındaki UDP soketleri genelde istemcidir (DNS sorguları vb.)
     if (s.proto === 'udp' && ephemeral && s.port >= ephemeral[0] && s.port <= ephemeral[1]) continue;
     const key = `${s.proto}/${s.port}`;
     let g = groups.get(key);
     if (!g) groups.set(key, (g = { proto: s.proto, port: s.port, addresses: [], exposure: 'local' }));
-    if (!g.addresses.includes(s.address)) g.addresses.push(s.address);
+    if (!seen.has(`${key} ${s.address}`)) {
+      seen.add(`${key} ${s.address}`);
+      g.addresses.push(s.address);
+    }
     const e = exposure(s.address);
     if (EXPOSURE_RANK[e] > EXPOSURE_RANK[g.exposure]) g.exposure = e;
   }
@@ -103,7 +131,7 @@ export function groupPorts(sockets, ephemeral = null) {
 const readOr = (file, fallback) => readText(file).then((t) => t.trim(), () => fallback);
 
 export function createNetworkCollector({ hideInterfaces }) {
-  const hidden = globsToRegExp(hideInterfaces);
+  const hidden = globMatcher(hideInterfaces);
   let prev = null;
   let prevTime = 0;
   let ephemeral;
