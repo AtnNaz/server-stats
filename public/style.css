@@ -950,3 +950,4 @@ td.cmd { max-width: 0; width: 100%; overflow: hidden; text-overflow: ellipsis; w
 .speed-running { display: flex; align-items: center; gap: 12px; font-size: 18px; }
 #speed-body .fact-tiles { margin-bottom: 12px; }
 #speed-body .chart-wrap { margin: 6px 0 12px; }
+.pull-close { opacity: 1; }

@@ -2957,15 +2957,34 @@ async function startPull() {
   loadAi();
 }
 
+// Biten indirme kısa süre "İndirildi" olarak görünür, sonra kaybolur (model zaten listede).
+// Hata kutusu kapatılana ya da 10 dakika geçene kadar kalır.
+const PULL_DONE_MS = 8000;
 function renderPull(p) {
-  if (!p) return fill(ai.pullStatus);
-  const recent = p.done && Date.now() - p.finishedAt > 10 * 60_000;
-  if (recent) return fill(ai.pullStatus);
+  if (!p || p.startedAt === aiState.pullDismissed) return fill(ai.pullStatus);
+  // Süre tarayıcının saatiyle, bitişin ilk görüldüğü andan ölçülür (sunucu saati farklı olabilir).
+  // Sayfa açıldığında zaten bitmiş bir indirme (çalışırken görülmemiş) gösterilmez; hata gösterilir.
+  if (!p.done) aiState.pullSeen = p.startedAt;
+  if (p.done && aiState.pullDoneKey !== p.startedAt) {
+    aiState.pullDoneKey = p.startedAt;
+    aiState.pullDoneAt = aiState.pullSeen === p.startedAt || p.error ? Date.now() : 0;
+  }
+  const doneFor = p.done ? Date.now() - aiState.pullDoneAt : 0;
+  if (p.done && doneFor > (p.error ? 10 * 60_000 : PULL_DONE_MS)) return fill(ai.pullStatus);
   const pct = p.total ? Math.round((p.completed / p.total) * 100) : null;
   const head = h('div', { class: 'pull-head' }, h('strong', null, p.model), h('span', { class: 'muted small' }, p.done ? '' : pct != null ? `${pct}% · ${fmtBytes(p.completed)} / ${fmtBytes(p.total)}` : p.status));
   if (p.done) {
-    const ok = !p.error;
-    return fill(ai.pullStatus, head, ok ? tag('ok', 'ok', t('ai.pullDone')) : errorBox(t(`ai.pullErr.${['not_found', 'cancelled', 'stalled'].includes(p.error) ? p.error : 'other'}`)));
+    if (!p.error) {
+      clearTimeout(aiState.pullHide);
+      aiState.pullHide = setTimeout(() => renderPull(aiState.info?.pull), PULL_DONE_MS - doneFor + 50);
+      return fill(ai.pullStatus, h('div', { class: 'pull-head' }, h('strong', null, p.model), tag('ok', 'ok', t('ai.pullDone'))));
+    }
+    const close = h('button', { type: 'button', class: 'chat-item-del pull-close', title: t('ai.close'), 'aria-label': t('ai.close') }, '×');
+    close.addEventListener('click', () => {
+      aiState.pullDismissed = p.startedAt;
+      fill(ai.pullStatus);
+    });
+    return fill(ai.pullStatus, h('div', { class: 'pull-head' }, h('strong', null, p.model), close), errorBox(t(`ai.pullErr.${['not_found', 'cancelled', 'stalled'].includes(p.error) ? p.error : 'other'}`)));
   }
   const cancel = button(t('ai.cancel'), null, async () => {
     cancel.disabled = true;
