@@ -1,6 +1,44 @@
 import { MODEL_NAME } from './system-settings.js';
 
-const ROLES = new Set(['system', 'user', 'assistant']);
+// Sistem mesajını panel kendisi ekler; tarayıcıdan gelen geçmişte yalnızca bu roller olabilir.
+const ROLES = new Set(['user', 'assistant', 'tool']);
+const MAX_CALLS = 8;
+const MAX_COMMAND = 2000;
+
+// Yapay zekânın kullanabildiği tek araç: sunucuda komut çalıştırmak.
+export const RUN_COMMAND_TOOL = {
+  type: 'function',
+  function: {
+    name: 'run_command',
+    description:
+      'Run a shell command on this Linux server and return its output. Prefer read-only diagnostic commands (journalctl, systemctl status, lsblk, df, dmesg, nvidia-smi, ls, cat). Commands that change something wait for the user to approve them.',
+    parameters: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: 'The bash command to run, e.g. "journalctl -u ollama -n 50 --no-pager"' },
+        reason: { type: 'string', description: 'One short sentence telling the user why this command is needed' },
+      },
+      required: ['command'],
+    },
+  },
+};
+
+// Model bir araç çağrısında komutu düzgün vermediyse çağrı yok sayılır.
+function toolCall(c) {
+  const fn = c?.function;
+  if (fn?.name !== 'run_command') return null;
+  let args = fn.arguments;
+  if (typeof args === 'string') {
+    try {
+      args = JSON.parse(args);
+    } catch {
+      return null;
+    }
+  }
+  const command = typeof args?.command === 'string' ? args.command.trim() : '';
+  if (!command || command.length > MAX_COMMAND) return null;
+  return { command, reason: typeof args.reason === 'string' ? args.reason.slice(0, 300) : '' };
+}
 const MAX_MESSAGES = 200;
 const MAX_CONTENT = 32_000;
 // İndirme sırasında bu kadar süre hiç veri gelmezse indirme durdurulur.
@@ -10,17 +48,25 @@ const BENCH_PROMPT = 'Write about 150 words explaining how a computer boots, in 
 const toNumber = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
 const perSecond = (count, ns) => (count && ns ? Math.round((count / (ns / 1e9)) * 10) / 10 : null);
 
-// Sohbet geçmişini doğrular; yalnızca rol ve metin geçer.
+// Sohbet geçmişini doğrular; yalnızca rol, metin ve komut çağrıları geçer.
 export function validateChat(body) {
   if (typeof body?.model !== 'string' || !MODEL_NAME.test(body.model)) return null;
   if (!Array.isArray(body.messages) || !body.messages.length || body.messages.length > MAX_MESSAGES) return null;
   const messages = [];
   for (const m of body.messages) {
     if (!m || !ROLES.has(m.role) || typeof m.content !== 'string' || m.content.length > MAX_CONTENT) return null;
-    messages.push({ role: m.role, content: m.content });
+    const msg = { role: m.role, content: m.content };
+    if (m.role === 'assistant' && m.tool_calls !== undefined) {
+      if (!Array.isArray(m.tool_calls) || m.tool_calls.length > MAX_CALLS) return null;
+      const calls = m.tool_calls.map(toolCall);
+      if (calls.some((c) => !c)) return null;
+      msg.tool_calls = calls.map(({ command }) => ({ function: { name: 'run_command', arguments: { command } } }));
+    }
+    if (m.role === 'tool') msg.tool_name = 'run_command';
+    messages.push(msg);
   }
-  if (messages.at(-1).role !== 'user') return null;
-  return { model: body.model, messages, think: body.think === true, serverContext: body.serverContext === true };
+  if (!['user', 'tool'].includes(messages.at(-1).role)) return null;
+  return { model: body.model, messages, think: body.think === true, tools: body.tools === true };
 }
 
 // Ollama'nın satır satır JSON akışını okur.
@@ -184,22 +230,33 @@ export function createOllama({ url, fetchImpl = fetch }) {
   }
 
   // Sohbet yanıtını parça parça aktarır. write() her parça için çağrılır; signal iptal edince akış durur.
-  async function chat({ model, messages, think, numCtx }, { signal, write }) {
-    const body = { model, messages, stream: true, keep_alive: '10m', think, ...(numCtx && { options: { num_ctx: numCtx } }) };
+  // Model komut çağırırsa çağrılar akışın sonunda { calls } olarak bildirilir; çalıştırma kararı panelindir.
+  async function chat({ model, messages, think, numCtx, tools }, { signal, write }) {
+    const body = { model, messages, stream: true, keep_alive: '10m', think, ...(numCtx && { options: { num_ctx: numCtx } }), ...(tools && { tools }) };
     let r = await call('/api/chat', { method: 'POST', body: JSON.stringify(body), signal });
     if (r.status === 400 && !think) {
       delete body.think;
       r = await call('/api/chat', { method: 'POST', body: JSON.stringify(body), signal });
     }
     if (r.status === 404) throw Object.assign(new Error('not_found'), { status: 404 });
+    if (r.status === 400 && tools) {
+      const text = await r.text().catch(() => '');
+      if (/tools?/i.test(text)) throw Object.assign(new Error('no_tools'), { status: 400, code: 'no_tools' });
+    }
     if (!r.ok) throw new Error(`ollama_http_${r.status}`);
+    const calls = [];
     for await (const msg of readLines(r.body)) {
       if (typeof msg.error === 'string') throw new Error(msg.error.slice(0, 200));
       const content = msg.message?.content;
       const thinking = msg.message?.thinking;
       if (thinking) write({ th: String(thinking) });
       if (content) write({ t: String(content) });
+      for (const c of msg.message?.tool_calls ?? []) {
+        const call = toolCall(c);
+        if (call && calls.length < MAX_CALLS) calls.push(call);
+      }
       if (msg.done) {
+        if (calls.length) write({ calls });
         write({
           done: true,
           stats: {

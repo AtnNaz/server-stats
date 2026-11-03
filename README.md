@@ -14,7 +14,7 @@ Geliştirici: [Ali Toprak Naz](https://github.com/AtnNaz) · Lisans: [PolyForm N
 - **Docker:** konteynerler ve durumları (isteğe bağlı)
 - **Geçmiş:** işlemci, bellek, sıcaklık, ağ, disk ve ekran kartı değerleri dakikalık olarak 30 gün saklanır; son 24 saat, 7 gün ve 30 günlük grafikler
 - **Terminal:** sunucunun komut satırı tarayıcıda (htop, nano, sudo çalışır); seçtiğiniz kullanıcıyla açılır, varsayılan kapalıdır (bkz. [Terminal](#terminal))
-- **Yapay zekâ:** sunucudaki [Ollama](https://ollama.com) ile sohbet, model indirme/silme ve hız testi; hiçbir şey dışarı gönderilmez. "Sunucu bilgisi" açıkken model sunucunun anlık durumunu (diskler, SMART, sıcaklık, ekran kartı, servisler, güncellemeler, son rapor) görür ve sorulara buna göre cevap verir; yalnızca okur, komut çalıştıramaz
+- **Yapay zekâ:** sunucudaki [Ollama](https://ollama.com) ile sohbet, model indirme/silme ve hız testi; hiçbir şey dışarı gönderilmez. Model sunucunun anlık durumunu (diskler, SMART, sıcaklık, ekran kartı, servisler, güncellemeler, son rapor) her zaman görür. "Komut çalıştırma" açıksa sorunları araştırmak için kendisi komut da çalıştırabilir (bkz. [Yapay zekâ komutları](#yapay-zekâ-komutları))
 
 Panel sol menüden bölümlere ayrılır (Genel bakış, Geçmiş, Ekran kartı, Depolama, Ağ, Süreçler, Servisler, Terminal, Yapay zekâ, Raporlar); menüdeki rozetler sorunlu bölümleri işaret eder. Birkaç saniyede bir kendini günceller; canlı grafikler son 10 dakikayı, Geçmiş sayfası son 30 günü gösterir. Giriş ekranından oturum açılır; aynı veriler `/api/stats` adresinden JSON olarak da alınabilir (bkz. [API](#api)).
 
@@ -167,6 +167,15 @@ Sol menüdeki **Terminal** sayfasından açılır: bir kullanıcı seçip "Termi
 - Terminalde yazdıklarınız (sudo şifresi dahil) ağda panelle aynı yoldan gider. Düz HTTP üzerinde kullanmayın; HTTPS, SSH tüneli ya da Tailscale gibi şifreli bir bağlantı kullanın. Panel şifrelenmemiş bağlantıda uyarı gösterir.
 - Terminal ekranı xterm.js çalışırken stil etiketi eklediği için yalnızca `/terminal` sayfasının güvenlik politikası satır içi stillere izin verir; betikler yine yalnızca panelin kendi dosyalarından yüklenir.
 - Gereksinim: `python3` (Ubuntu ve Debian'da hazır gelir).
+
+## Yapay zekâ komutları
+
+Yapay zekâ sayfasındaki **Komut çalıştırma** anahtarı açıkken model, sorunları araştırmak için sunucuda komut çalıştırabilir. Anahtar terminal açık değilse kullanılamaz.
+
+- Komutlar terminal için seçilen kullanıcıyla, terminal olmadan ve en fazla 30 saniye (`terminal.commandTimeoutSeconds`) çalışır. sudo şifre soramadığı için root gerektiren komutlar çalışmaz.
+- Yalnızca bilgi okuyan bilinen komutlar (`journalctl`, `systemctl status`, `lsblk`, `df`, `dmesg`, `nvidia-smi`, `ls`, `cat`…) **onaysız** çalışır. Yönlendirme (`>`), zincirleme (`;`, `&&`), alt kabuk, joker karakter, `sudo` ya da bilinmeyen bir seçenek içeren her komut ve bir şeyi değiştiren her komut sohbette **Çalıştır / Reddet** düğmeleriyle onayınızı bekler. Kural panelde uygulanır; tarayıcı onay vermeden bu komutlar çalışmaz.
+- Komutlar ayrı bir systemd soketi (`/run/serverhealth-exec.sock`) üzerinden, terminalle aynı kullanıcıyla çalışan kısa ömürlü bir servisle yürütülür. Her komut `journalctl -u serverhealth` günlüğüne yazılır.
+- Komut çıktıları ve sistem kayıtları modele veri olarak verilir. Küçük modeller yanılabilir; onay isteyen komutları çalıştırmadan önce okuyun.
 
 ## HTTPS
 

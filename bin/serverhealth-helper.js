@@ -184,8 +184,11 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
 
   // Panel terminali: soket ve şablon servis kurulumla gelir; burada yalnızca kabuğun hangi
   // kullanıcıyla açılacağı yazılır ve soket açılıp kapatılır.
+  // Yapay zekâ komutları (serverhealth-exec) terminalle aynı kullanıcıyla açılıp kapanır.
   const TERM_SOCKET = 'serverhealth-term.socket';
+  const EXEC_SOCKET = 'serverhealth-exec.socket';
   const termDropIn = () => path.join(files.units, 'serverhealth-term@.service.d', 'user.conf');
+  const execDropIn = () => path.join(files.units, 'serverhealth-exec@.service.d', 'user.conf');
 
   // Terminal için seçilebilecek kullanıcılar: gerçek giriş kabuğu olan normal hesaplar (root değil).
   async function terminalUsers() {
@@ -199,14 +202,23 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
 
   async function setTerminal(user) {
     await writeAtomic(termDropIn(), `[Service]\nUser=${user}\n`);
+    await writeAtomic(execDropIn(), `[Service]\nUser=${user}\n`);
     await run(platform.systemctl, ['daemon-reload']);
-    await run(platform.systemctl, ['enable', '--now', TERM_SOCKET]);
+    await run(platform.systemctl, ['enable', '--now', TERM_SOCKET, EXEC_SOCKET]);
   }
   async function removeTerminal() {
-    await run(platform.systemctl, ['disable', '--now', TERM_SOCKET]);
-    await run(platform.systemctl, ['stop', 'serverhealth-term@*.service']);
+    await run(platform.systemctl, ['disable', '--now', TERM_SOCKET, EXEC_SOCKET]);
+    await run(platform.systemctl, ['stop', 'serverhealth-term@*.service', 'serverhealth-exec@*.service']);
     await unlink(termDropIn()).catch(() => {});
+    await unlink(execDropIn()).catch(() => {});
     await run(platform.systemctl, ['daemon-reload']);
+  }
+  // Terminal bu özellikten önceki bir sürümde açıldıysa komut soketi de aynı kullanıcıyla açılır.
+  async function reconcileTerminal() {
+    const tm = (await loadState()).terminal;
+    if (!tm.enabled || !platform.terminal || !platform.terminalUsers.includes(tm.user)) return;
+    if (await access(execDropIn()).then(() => true, () => false)) return;
+    await setTerminal(tm.user);
   }
 
   let platform;
@@ -458,6 +470,7 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
 
   async function processQueue() {
     platform = await detectPlatform();
+    await reconcileTerminal().catch((err) => console.error(`Terminal ayarı uygulanamadı: ${err.message}`));
     const requests = await readQueue();
     let updates = null;
     let reboot = false;

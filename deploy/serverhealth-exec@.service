@@ -1,0 +1,14 @@
+[Unit]
+Description=Node Stats - yapay zekâ komutu
+CollectMode=inactive-or-failed
+
+[Service]
+# Kullanıcı, terminalle aynı: root yardımcısının yazdığı serverhealth-exec@.service.d/user.conf.
+# Köprü root olarak komut çalıştırmayı reddeder; terminal olmadığı için sudo şifre soramaz.
+User=nobody
+ExecStart=/usr/bin/python3 /opt/serverhealth/bin/serverhealth-exec.py
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+KillMode=control-group
+RuntimeMaxSec=180

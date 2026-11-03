@@ -179,10 +179,15 @@ rmdir /var/lib/serverhealth-panel/queue 2>/dev/null || true # eski sürümlerin 
 
 # Panel terminali: soket yalnızca panelin grubuna açıktır; panelden açılana kadar etkin değildir.
 # Kabuğun hangi kullanıcıyla açılacağını root yardımcısı serverhealth-term@.service.d/user.conf ile yazar.
-install -m 0644 "$APP_DIR/deploy/serverhealth-term.socket" /etc/systemd/system/serverhealth-term.socket
+# Yapay zekâ komutları da aynı kullanıcıyla, ayrı bir soket üzerinden çalışır.
+for unit in serverhealth-term.socket serverhealth-exec.socket; do
+  install -m 0644 "$APP_DIR/deploy/$unit" "/etc/systemd/system/$unit"
+done
 if PYTHON_BIN="$(command -v python3)"; then
-  sed "s|/usr/bin/python3|$PYTHON_BIN|g" "$APP_DIR/deploy/serverhealth-term@.service" > /etc/systemd/system/serverhealth-term@.service
-  chmod 0644 /etc/systemd/system/serverhealth-term@.service
+  for unit in serverhealth-term@.service serverhealth-exec@.service; do
+    sed "s|/usr/bin/python3|$PYTHON_BIN|g" "$APP_DIR/deploy/$unit" > "/etc/systemd/system/$unit"
+    chmod 0644 "/etc/systemd/system/$unit"
+  done
 else
   echo "Bilgi: python3 yok; panel terminali için gerekli: sudo $(pkg_hint python3)"
 fi

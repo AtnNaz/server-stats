@@ -130,7 +130,21 @@ const ndjson = (...lines) => new Response(lines.map((l) => `${JSON.stringify(l)}
 test('ollama: sohbet doğrulanır, indirme ilerlemesi toplanır, sohbet akışı parça parça yazılır', async () => {
   assert.ok(validateChat({ model: 'qwen3.5:4b', messages: [{ role: 'user', content: 'selam' }] }));
   assert.equal(validateChat({ model: 'x; rm', messages: [{ role: 'user', content: 'a' }] }), null);
-  assert.equal(validateChat({ model: 'a', messages: [{ role: 'tool', content: 'a' }] }), null);
+  assert.equal(validateChat({ model: 'a', messages: [{ role: 'system', content: 'kendi talimatım' }, { role: 'user', content: 'a' }] }), null);
+  // Komut çağrısı ve sonucu geçmişe girer; yalnızca run_command ve komut metni korunur.
+  const withTool = validateChat({
+    model: 'a',
+    tools: true,
+    messages: [
+      { role: 'user', content: 'diskler?' },
+      { role: 'assistant', content: '', tool_calls: [{ function: { name: 'run_command', arguments: { command: 'lsblk', extra: 1 } } }] },
+      { role: 'tool', content: 'sda 2T' },
+    ],
+  });
+  assert.deepEqual(withTool.messages[1].tool_calls, [{ function: { name: 'run_command', arguments: { command: 'lsblk' } } }]);
+  assert.equal(withTool.messages[2].tool_name, 'run_command');
+  assert.equal(withTool.tools, true);
+  assert.equal(validateChat({ model: 'a', messages: [{ role: 'assistant', content: '', tool_calls: [{ function: { name: 'rm', arguments: {} } }] }, { role: 'user', content: 'a' }] }), null);
   assert.equal(validateChat({ model: 'a', messages: [{ role: 'assistant', content: 'a' }] }), null);
   assert.equal(validateChat({ model: 'a', messages: [] }), null);
   assert.equal(validateChat({ model: 'a', messages: [{ role: 'user', content: 'a'.repeat(40_000) }] }), null);
@@ -141,6 +155,9 @@ test('ollama: sohbet doğrulanır, indirme ilerlemesi toplanır, sohbet akışı
     if (url.pathname === '/api/pull' && JSON.parse(init.body).model === 'yok:1') return ndjson({ status: 'pulling manifest' }, { error: 'pull model manifest: file does not exist' });
     if (url.pathname === '/api/pull') {
       return ndjson({ status: 'pulling manifest' }, { status: 'pulling a', digest: 'a', total: 100, completed: 50 }, { status: 'pulling b', digest: 'b', total: 300, completed: 300 }, { status: 'success' });
+    }
+    if (url.pathname === '/api/chat' && JSON.parse(init.body).tools) {
+      return ndjson({ message: { content: '', tool_calls: [{ function: { name: 'run_command', arguments: { command: 'df -h', reason: 'doluluk' } } }, { function: { name: 'baska', arguments: {} } }] } }, { done: true });
     }
     if (url.pathname === '/api/chat') {
       return ndjson({ message: { content: 'Mer' } }, { message: { content: 'haba' } }, { done: true, eval_count: 10, eval_duration: 2e9, prompt_eval_count: 5, prompt_eval_duration: 1e8 });
@@ -165,6 +182,9 @@ test('ollama: sohbet doğrulanır, indirme ilerlemesi toplanır, sohbet akışı
   assert.equal(parts.filter((p) => p.t).map((p) => p.t).join(''), 'Merhaba');
   assert.deepEqual(parts.at(-1), { done: true, stats: { generated: 10, generateRate: 5, prompt: 5, promptRate: 50 } });
   assert.equal(calls.find(([p]) => p === '/api/chat')[1].stream, true);
+  const toolParts = [];
+  await ollama.chat({ model: 'qwen3.5:4b', messages: [{ role: 'user', content: 'disk' }], tools: [{ type: 'function' }] }, { signal: AbortSignal.timeout(1000), write: (p) => toolParts.push(p) });
+  assert.deepEqual(toolParts[0], { calls: [{ command: 'df -h', reason: 'doluluk' }] });
 });
 
 test('terminal ayarı: kullanıcı doğrulanır, systemd ek dosyası yazılır, kapatınca kaldırılır', async (t) => {
@@ -190,13 +210,15 @@ test('terminal ayarı: kullanıcı doğrulanır, systemd ek dosyası yazılır, 
   put('2.json', { type: 'settings', settings: { terminal: { enabled: true, user: 'ali' } } });
   await helper.processQueue();
   assert.equal(readFileSync(dropIn, 'utf8'), '[Service]\nUser=ali\n');
-  assert.ok(helper.commands.includes('/usr/bin/systemctl enable --now serverhealth-term.socket'));
+  assert.equal(readFileSync(dropIn.replace('term@', 'exec@'), 'utf8'), '[Service]\nUser=ali\n');
+  assert.ok(helper.commands.includes('/usr/bin/systemctl enable --now serverhealth-term.socket serverhealth-exec.socket'));
   assert.deepEqual(JSON.parse(readFileSync(path.join(root, 'var/lib/serverhealth/system.json'), 'utf8')).settings.terminal, { enabled: true, user: 'ali' });
 
   put('3.json', { type: 'settings', settings: { terminal: { enabled: false } } });
   await helper.processQueue();
   assert.equal(existsSync(dropIn), false);
-  assert.ok(helper.commands.includes('/usr/bin/systemctl disable --now serverhealth-term.socket'));
+  assert.ok(helper.commands.includes('/usr/bin/systemctl disable --now serverhealth-term.socket serverhealth-exec.socket'));
+  assert.equal(existsSync(dropIn.replace('term@', 'exec@')), false);
   assert.deepEqual(readdirSync(queue), []);
 });
 
@@ -228,4 +250,59 @@ test('sunucu özeti: değerler okunur, serbest metin tek satıra indirilir ve k�
   assert.match(text, /bekleyen paket: 3 · güvenlik güncellemesi: 1 · yeniden başlatma gerekiyor/);
   assert.match(text, /\[warning\] sda bekleyen sektör/);
   assert.doesNotMatch(text, /Docker/);
+});
+
+test('komut kuralı: yalnızca bilgi okuyan komutlar onaysız çalışır', async () => {
+  const { isReadOnly, classifyCommand } = await import('../src/command-policy.js');
+  const cases = {
+    'journalctl -u ollama -n 50 --no-pager': true,
+    'journalctl -f': false,
+    'journalctl --vacuum-size=1M': false,
+    'systemctl status nginx': true,
+    'systemctl restart nginx': false,
+    'df -h | sort -k5 -h': true,
+    'cat /etc/fstab | grep mnt': true,
+    'nvidia-smi --query-gpu=name,temperature.gpu --format=csv': true,
+    'nvidia-smi -pl 100': false,
+    'rm -rf /tmp/x': false,
+    'ls; rm x': false,
+    'cat x > y': false,
+    'echo $(id)': false,
+    'ls && reboot': false,
+    'ls || reboot': false,
+    'ls | xargs rm': false,
+    'sudo lsblk': false,
+    '/usr/bin/ls': false,
+    'A=1 ls': false,
+    'find /var/log -name x.log': true,
+    'find / -name x -delete': false,
+    'ip addr': true,
+    'ip link set eth0 down': false,
+    'sort -o out x': false,
+    'tail -f /var/log/syslog': false,
+    'ping 1.1.1.1': false,
+    'ping -c 3 1.1.1.1': true,
+    __proto__: false,
+    constructor: false,
+  };
+  for (const [command, expected] of Object.entries(cases)) assert.equal(isReadOnly(command), expected, command);
+  assert.equal(isReadOnly('constructor'), false);
+  assert.equal(classifyCommand(''), null);
+  assert.equal(classifyCommand('a'.repeat(2001)), null);
+  assert.deepEqual(classifyCommand('  lsblk '), { command: 'lsblk', readOnly: true });
+});
+
+test('komut köprüsü: istek tek satır JSON gider, sonuç okunur', async (t) => {
+  const { runCommand } = await import('../src/exec.js');
+  const sock = path.join(tempDir(t), 's.sock');
+  const server = net.createServer((c) => {
+    c.once('data', (d) => {
+      const req = JSON.parse(String(d).split('\n')[0]);
+      c.end(`${JSON.stringify({ code: 0, output: `çalıştı: ${req.command} (${req.timeout})`, truncated: false, timedOut: false })}\n`);
+    });
+  });
+  await new Promise((r) => server.listen(sock, r));
+  t.after(() => server.close());
+  assert.deepEqual(await runCommand({ socketPath: sock, command: 'lsblk', timeoutSeconds: 5 }), { code: 0, output: 'çalıştı: lsblk (5)', truncated: false, timedOut: false });
+  await assert.rejects(runCommand({ socketPath: path.join(path.dirname(sock), 'yok.sock'), command: 'ls' }));
 });

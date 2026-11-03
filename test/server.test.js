@@ -201,3 +201,16 @@ test('geçmiş ve terminal: oturum ve aynı kaynak şartı, terminal sayfasını
   const chat = await post(base, '/api/ollama/chat', { model: 'a', messages: [{ role: 'user', content: 'x'.repeat(600_000) }] }, cookie);
   assert.equal(chat.status, 413);
 });
+
+test('yapay zekâ komutu: oturum, onay ve hizmet denetimi', async (t) => {
+  const { base } = await startServer(t);
+  assert.equal((await post(base, '/api/ai/exec', { command: 'lsblk' })).status, 401);
+  const cookie = await signIn(base);
+  assert.equal((await post(base, '/api/ai/exec', { command: '' }, cookie)).status, 400);
+  // Değiştiren komut onaysız reddedilir; okuma komutu onaysız geçer ama hizmet kapalı.
+  assert.equal((await (await post(base, '/api/ai/exec', { command: 'rm -rf /tmp/x' }, cookie)).json()).code, 'approval');
+  assert.equal((await (await post(base, '/api/ai/exec', { command: 'lsblk' }, cookie)).json()).code, 'exec_unavailable');
+  assert.equal((await (await post(base, '/api/ollama/chat', { model: 'a', tools: true, messages: [{ role: 'user', content: 'x' }] }, cookie)).json()).code, 'exec_unavailable');
+  const term = await (await fetch(`${base}/api/terminal`, { headers: { Cookie: cookie } })).json();
+  assert.deepEqual([term.available, term.execAvailable], [false, false]);
+});

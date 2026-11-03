@@ -1,0 +1,15 @@
+[Unit]
+Description=Node Stats - yapay zekâ komut soketi
+# Terminal açılınca aynı kullanıcıyla etkinleşir; yalnızca panel servisinin grubu bağlanabilir.
+
+[Socket]
+ListenStream=/run/serverhealth-exec.sock
+SocketUser=root
+SocketGroup=serverhealth
+SocketMode=0660
+Accept=yes
+MaxConnections=4
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

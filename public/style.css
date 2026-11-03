@@ -909,3 +909,11 @@ td.cmd { max-width: 0; width: 100%; overflow: hidden; text-overflow: ellipsis; w
 .term-state[data-state="open"] .dot { background: var(--good); }
 .term-state[data-state="closed"] .dot { background: var(--critical); }
 .term-screen { flex: 1; min-height: 0; padding: 6px 0 0 8px; }
+
+.chat-cmds { display: grid; gap: 8px; margin: 6px 0; }
+.chat-cmd { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); padding: 8px 10px; display: grid; gap: 6px; }
+.chat-cmd-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.chat-cmd-head code { font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
+.chat-cmd-actions { display: flex; gap: 8px; }
+.chat-cmd-out summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.chat-cmd-out pre { margin: 6px 0 0; max-height: 320px; overflow: auto; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-2); padding: 8px; border-radius: 6px; }

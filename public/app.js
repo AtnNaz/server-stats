@@ -2506,7 +2506,12 @@ function leaveHistory() {
 // ---------- Yapay zekâ: Ollama sohbeti ve modeller ----------
 
 const CHAT_KEY = 'nodestats-chat';
-const aiState = { info: null, model: null, think: false, server: true, messages: [], streaming: null, bench: {} };
+// Bir mesaj için en fazla bu kadar komut turu yapılır; model döngüye girerse durur.
+const MAX_TOOL_ROUNDS = 6;
+// Modele geri verilen komut çıktısı bu uzunlukta kesilir (bağlam penceresi dolmasın).
+const MAX_TOOL_OUTPUT = 6000;
+const FINISHED = ['done', 'rejected', 'error'];
+const aiState = { info: null, model: null, think: false, exec: false, execAvailable: false, execUser: null, messages: [], streaming: null, bench: {} };
 let aiTimer = null;
 let aiBuilt = false;
 const ai = {};
@@ -2516,9 +2521,11 @@ function loadChat() {
     const saved = JSON.parse(localStorage.getItem(CHAT_KEY) ?? 'null');
     if (saved && Array.isArray(saved.messages)) {
       aiState.messages = saved.messages.filter((m) => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string');
+      // Sayfa kapanırken onay bekleyen ya da çalışan komutlar yarım kalmıştır.
+      for (const m of aiState.messages) for (const c of m.calls ?? []) if (!FINISHED.includes(c.state)) c.state = 'rejected';
       aiState.model = typeof saved.model === 'string' ? saved.model : null;
       aiState.think = saved.think === true;
-      aiState.server = saved.server !== false;
+      aiState.exec = saved.exec === true;
     }
   } catch {
     /* kayıt yoksa boş sohbetle başlanır */
@@ -2527,7 +2534,7 @@ function loadChat() {
 
 function saveChat() {
   try {
-    localStorage.setItem(CHAT_KEY, JSON.stringify({ model: aiState.model, think: aiState.think, server: aiState.server, messages: aiState.messages.slice(-100) }));
+    localStorage.setItem(CHAT_KEY, JSON.stringify({ model: aiState.model, think: aiState.think, exec: aiState.exec, messages: aiState.messages.slice(-100) }));
   } catch {
     /* depolama kapalıysa sohbet bu sekmeyle sınırlı kalır */
   }
@@ -2538,12 +2545,65 @@ function chatStats(stats) {
   return t('ai.stats', { n: num0.format(stats.generated ?? 0), rate: num1.format(stats.generateRate) });
 }
 
+// Modelin gördüğü komut sonucu.
+function toolText(c) {
+  if (c.state === 'rejected') return t('ai.toolRejected');
+  if (c.state === 'error' || !c.result) return t('ai.toolFailed');
+  const { code, output, truncated, timedOut } = c.result;
+  const notes = [timedOut ? t('ai.timedOut') : null, truncated || output.length > MAX_TOOL_OUTPUT ? t('ai.truncated') : null].filter(Boolean);
+  return `exit code ${code}${notes.length ? ` (${notes.join(', ')})` : ''}\n${output.slice(0, MAX_TOOL_OUTPUT)}`;
+}
+
+// Ekrandaki sohbetten Ollama'ya giden geçmiş: komut çağrıları ve sonuçları dahil, hatalı yanıtlar hariç.
+function apiMessages() {
+  const out = [];
+  for (const m of aiState.messages) {
+    if (m.role === 'user') {
+      out.push({ role: 'user', content: m.content });
+      continue;
+    }
+    const done = (m.calls ?? []).filter((c) => FINISHED.includes(c.state));
+    if (!m.content && !done.length) continue;
+    out.push({ role: 'assistant', content: m.content, ...(done.length && { tool_calls: done.map((c) => ({ function: { name: 'run_command', arguments: { command: c.command } } })) }) });
+    for (const c of done) out.push({ role: 'tool', content: toolText(c) });
+  }
+  return out;
+}
+
+const CALL_STATE = {
+  auto: ['info', 'list', 'ai.autoRun'],
+  approval: ['warn', 'warn', 'ai.needsApproval'],
+  running: ['info', 'clock', 'ai.running'],
+  rejected: ['', 'off', 'ai.rejected'],
+  error: ['crit', 'crit', 'ai.execFailed'],
+};
+
+function callEl(c) {
+  let state = CALL_STATE[c.state === 'pending' ? 'auto' : c.state];
+  if (c.state === 'done') state = c.result.code === 0 ? ['ok', 'ok', 'ai.done'] : ['crit', 'crit', 'ai.failedCode'];
+  const out = c.result
+    ? h('details', { class: 'chat-cmd-out', open: c.open === true }, h('summary', null, t('ai.output', { code: c.result.code })), h('pre', null, c.result.output || t('ai.noOutput')))
+    : null;
+  out?.addEventListener('toggle', () => (c.open = out.open));
+  return h(
+    'div',
+    { class: 'chat-cmd' },
+    h('div', { class: 'chat-cmd-head' }, h('code', null, c.command), state ? tag(state[0], state[1], t(state[2], { code: c.result?.code })) : null),
+    c.reason ? h('div', { class: 'muted small' }, c.reason) : null,
+    c.state === 'approval'
+      ? h('div', { class: 'chat-cmd-actions' }, button(t('ai.run'), 'accent', () => c.resolve?.(true)), button(t('ai.reject'), null, () => c.resolve?.(false)))
+      : null,
+    out,
+  );
+}
+
 function messageEl(m) {
-  const body = h('div', { class: 'chat-text' }, m.content);
+  const body = m.content ? h('div', { class: 'chat-text' }, m.content) : null;
   const thinking = m.thinking ? h('details', { class: 'chat-think' }, h('summary', null, t('ai.thinking')), h('div', { class: 'chat-text' }, m.thinking)) : null;
+  const calls = m.calls?.length ? h('div', { class: 'chat-cmds' }, m.calls.map(callEl)) : null;
   const stats = m.stats ? h('div', { class: 'muted small' }, chatStats(m.stats)) : null;
   const error = m.error ? errorBox(t(m.error)) : null;
-  return h('div', { class: `chat-msg ${m.role}` }, h('div', { class: 'chat-role' }, m.role === 'user' ? t('ai.you') : m.model ?? t('ai.assistant')), thinking, body, stats, error);
+  return h('div', { class: `chat-msg ${m.role}` }, h('div', { class: 'chat-role' }, m.role === 'user' ? t('ai.you') : m.model ?? t('ai.assistant')), thinking, body, calls, stats, error);
 }
 
 function renderChat() {
@@ -2557,64 +2617,112 @@ function renderChat() {
   ai.clear.disabled = Boolean(aiState.streaming) || !aiState.messages.length;
 }
 
+const CHAT_ERRORS = { not_found: 'ai.errNotFound', no_tools: 'ai.errNoTools', exec_unavailable: 'ai.errExecUnavailable' };
+
+// Bir model yanıtını akış olarak okur. Hata ya da durdurma olursa false döner.
+async function streamReply(reply, signal) {
+  try {
+    const res = await fetch(new URL('/api/ollama/chat', window.location.origin), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: reply.model, messages: apiMessages(), think: aiState.think, tools: aiState.exec && aiState.execAvailable }),
+      signal,
+    });
+    if (res.status === 401) return window.location.replace(`/login${window.location.hash}`);
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      reply.error = CHAT_ERRORS[data.code] ?? 'ai.errFailed';
+      return false;
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line) continue;
+        const msg = JSON.parse(line);
+        if (msg.t) reply.content += msg.t;
+        if (msg.th) reply.thinking += msg.th;
+        if (msg.calls) reply.calls = msg.calls.map((c) => ({ command: c.command, reason: c.reason, auto: c.auto === true, state: 'pending' }));
+        if (msg.done) reply.stats = msg.stats;
+        if (msg.error) reply.error = 'ai.errFailed';
+      }
+      renderChat();
+    }
+  } catch {
+    if (signal.aborted) reply.stopped = true;
+    else reply.error = 'ai.errFailed';
+  }
+  if (reply.stopped && reply.content) reply.content += ` ${t('ai.stoppedMark')}`;
+  if (!reply.content && !reply.calls && !reply.error) reply.error = reply.stopped ? 'ai.stopped' : 'ai.errFailed';
+  return !reply.error && !reply.stopped;
+}
+
+// Okuma komutları hemen çalışır; diğerleri "Çalıştır" ya da "Reddet" düğmesini bekler.
+async function runCall(c, signal) {
+  if (!c.auto) {
+    c.state = 'approval';
+    renderChat();
+    const approved = await new Promise((resolve) => {
+      c.resolve = resolve;
+      signal.addEventListener('abort', () => resolve(false), { once: true });
+    });
+    delete c.resolve;
+    if (!approved) {
+      c.state = 'rejected';
+      return;
+    }
+  }
+  c.state = 'running';
+  renderChat();
+  const res = await api('/api/ai/exec', { command: c.command, approved: !c.auto });
+  if (res.ok) {
+    c.state = 'done';
+    c.result = res.data;
+  } else {
+    c.state = 'error';
+  }
+}
+
 async function sendChat() {
   if (aiState.streaming) return aiState.streaming.abort();
   const text = ai.input.value.trim();
   if (!text || !aiState.model) return;
   ai.input.value = '';
   aiState.messages.push({ role: 'user', content: text });
-  const reply = { role: 'assistant', content: '', thinking: '', model: aiState.model };
-  const history = aiState.messages.map(({ role, content }) => ({ role, content }));
-  aiState.messages.push(reply);
   const controller = new AbortController();
   aiState.streaming = controller;
   renderChat();
   try {
-    const res = await fetch(new URL('/api/ollama/chat', window.location.origin), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: aiState.model, messages: history, think: aiState.think, serverContext: aiState.server }),
-      signal: controller.signal,
-    });
-    if (res.status === 401) return window.location.replace(`/login${window.location.hash}`);
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      reply.error = data.code === 'not_found' ? 'ai.errNotFound' : 'ai.errFailed';
-    } else {
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop();
-        for (const line of lines) {
-          if (!line) continue;
-          const msg = JSON.parse(line);
-          if (msg.t) reply.content += msg.t;
-          if (msg.th) reply.thinking += msg.th;
-          if (msg.done) reply.stats = msg.stats;
-          if (msg.error) reply.error = 'ai.errFailed';
-        }
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      const reply = { role: 'assistant', content: '', thinking: '', model: aiState.model };
+      aiState.messages.push(reply);
+      if (!(await streamReply(reply, controller.signal)) || !reply.calls?.length) break;
+      for (const c of reply.calls) {
+        if (controller.signal.aborted) c.state = 'rejected';
+        else await runCall(c, controller.signal);
         renderChat();
       }
+      if (controller.signal.aborted) break;
     }
-  } catch {
-    if (controller.signal.aborted) reply.stopped = true;
-    else reply.error = 'ai.errFailed';
   } finally {
-    if (reply.stopped && reply.content) reply.content += ` ${t('ai.stoppedMark')}`;
-    if (!reply.content && !reply.error) reply.error = reply.stopped ? 'ai.stopped' : 'ai.errFailed';
     aiState.streaming = null;
-    // Hatalı yanıtlar bir sonraki isteğin geçmişine girmez.
-    if (reply.error && !reply.content) aiState.messages.pop();
     saveChat();
     renderChat();
-    if (reply.error && !reply.content) ai.log.append(errorBox(t(reply.error)));
     ai.input.focus();
   }
+}
+
+function updateExecSwitch() {
+  if (!ai.exec) return;
+  ai.exec.input.disabled = !aiState.execAvailable;
+  ai.exec.set(aiState.exec && aiState.execAvailable);
+  ai.exec.el.title = aiState.execAvailable ? t('ai.execHint', { user: aiState.execUser ?? '?' }) : t('ai.execUnavailable');
 }
 
 function buildAi() {
@@ -2629,12 +2737,12 @@ function buildAi() {
     aiState.think = think.input.checked;
     saveChat();
   });
-  const server = switchEl(aiState.server, t('ai.server'));
-  server.el.title = t('ai.serverHint');
-  server.input.addEventListener('change', () => {
-    aiState.server = server.input.checked;
+  ai.exec = switchEl(aiState.exec, t('ai.exec'));
+  ai.exec.input.addEventListener('change', () => {
+    aiState.exec = ai.exec.input.checked;
     saveChat();
   });
+  updateExecSwitch();
   ai.clear = button(t('ai.newChat'), null, () => {
     aiState.messages = [];
     saveChat();
@@ -2652,7 +2760,7 @@ function buildAi() {
   const chatCard = h(
     'article',
     { class: 'card chat-card' },
-    h('div', { class: 'card-head' }, h('h2', { class: 'card-title' }, icon('chip'), h('span', null, t('ai.chat'))), h('div', { class: 'chat-tools' }, ai.model, server.el, think.el, ai.clear)),
+    h('div', { class: 'card-head' }, h('h2', { class: 'card-title' }, icon('chip'), h('span', null, t('ai.chat'))), h('div', { class: 'chat-tools' }, ai.model, ai.exec.el, think.el, ai.clear)),
     ai.log,
     h('div', { class: 'chat-compose' }, ai.input, ai.send),
   );
@@ -2765,8 +2873,11 @@ function renderModels(d) {
 
 async function loadAi() {
   clearTimeout(aiTimer);
-  const res = await api('/api/ollama');
+  const [res, term] = await Promise.all([api('/api/ollama'), api('/api/terminal')]);
   const d = res.ok ? res.data : null;
+  aiState.execAvailable = term.ok && term.data.execAvailable === true;
+  aiState.execUser = term.ok ? term.data.user : null;
+  updateExecSwitch();
   if (!d?.available) {
     fill($('ai-root'), h('article', { class: 'card' }, errorBox(t('ai.unavailable'))));
     aiBuilt = false;

@@ -17,7 +17,9 @@ import { createSessions } from './sessions.js';
 import { createSampler } from './sampler.js';
 import { createUpdateChecker, repoFromUrl } from './update-check.js';
 import { createHistoryStore, RANGES } from './history-store.js';
-import { createOllama, validateChat } from './ollama.js';
+import { createOllama, validateChat, RUN_COMMAND_TOOL } from './ollama.js';
+import { classifyCommand } from './command-policy.js';
+import { runCommand } from './exec.js';
 import { buildServerContext } from './server-context.js';
 import { upgrade } from './websocket.js';
 import { createTerminals, terminalAvailable } from './terminal.js';
@@ -277,12 +279,13 @@ function main() {
     if (!body) return;
     const chat = validateChat(body);
     if (!chat) return sendJson(req, res, 400, { code: 'invalid' });
-    // "Sunucu bilgisi" açıkken panelin anlık özeti sohbetin başına sistem mesajı olarak eklenir.
-    if (chat.serverContext) {
-      const context = buildServerContext({ snapshot: sampler.current().snapshot, system: await readSystemStatus(), report: await latestReport(), language: effective.language });
-      chat.messages = [{ role: 'system', content: context }, ...chat.messages];
-      chat.numCtx = 8192;
-    }
+    if (chat.tools && !(await terminalAvailable(config.terminal.execSocket))) return sendJson(req, res, 409, { code: 'exec_unavailable' });
+    // Panelin anlık özeti her sohbetin başına sistem mesajı olarak eklenir; komut çalıştırma açıksa araç tanımı da verilir.
+    const system = await readSystemStatus();
+    const context = buildServerContext({ snapshot: sampler.current().snapshot, system, report: await latestReport(), language: effective.language, commands: chat.tools ? { user: system.settings?.terminal?.user ?? null, timeoutSeconds: config.terminal.commandTimeoutSeconds } : null });
+    chat.messages = [{ role: 'system', content: context }, ...chat.messages];
+    chat.numCtx = chat.tools ? 16384 : 8192;
+    chat.tools = chat.tools ? [RUN_COMMAND_TOOL] : null;
     const controller = new AbortController();
     res.on('close', () => controller.abort());
     let started = false;
@@ -291,6 +294,8 @@ function main() {
         started = true;
         res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'application/x-ndjson; charset=utf-8', 'X-Accel-Buffering': 'no' });
       }
+      // Komut çağrıları panelde sınıflandırılır: yalnızca okuyan komutlar onaysız çalışabilir.
+      if (obj.calls) obj = { calls: obj.calls.map((c) => ({ ...c, auto: classifyCommand(c.command)?.readOnly === true })) };
       res.write(`${JSON.stringify(obj)}\n`);
     };
     try {
@@ -299,9 +304,26 @@ function main() {
       res.end();
     } catch (err) {
       if (controller.signal.aborted) return res.destroy();
-      if (!started) return sendJson(req, res, err.status === 404 ? 404 : 502, { code: err.status === 404 ? 'not_found' : 'ollama' });
+      if (!started) return sendJson(req, res, err.status === 404 ? 404 : err.code === 'no_tools' ? 400 : 502, { code: err.status === 404 ? 'not_found' : err.code === 'no_tools' ? 'no_tools' : 'ollama' });
       write({ error: 'ollama' });
       res.end();
+    }
+  }
+
+  // Yapay zekânın istediği bir komutu çalıştırır. Yalnızca okuyan komutlar onaysız; diğerleri için
+  // tarayıcı kullanıcının "Çalıştır" demesinden sonra approved: true gönderir.
+  async function handleAiExec(req, res) {
+    const body = await readJsonBody(req, res);
+    if (!body) return;
+    const cmd = classifyCommand(body.command);
+    if (!cmd) return sendJson(req, res, 400, { code: 'invalid' });
+    if (!cmd.readOnly && body.approved !== true) return sendJson(req, res, 403, { code: 'approval' });
+    if (!(await terminalAvailable(config.terminal.execSocket))) return sendJson(req, res, 409, { code: 'exec_unavailable' });
+    console.log(`Yapay zekâ komutu (${cmd.readOnly ? 'otomatik' : 'onaylı'}, ${clientIp(req)}): ${cmd.command.slice(0, 300).replace(/\s+/g, ' ')}`);
+    try {
+      return sendJson(req, res, 200, await runCommand({ socketPath: config.terminal.execSocket, command: cmd.command, timeoutSeconds: config.terminal.commandTimeoutSeconds }));
+    } catch {
+      return sendJson(req, res, 502, { code: 'exec_failed' });
     }
   }
 
@@ -423,6 +445,7 @@ function main() {
       if (pathname === '/api/ollama/delete') return handleOllamaModel(req, res, 'delete');
       if (pathname === '/api/ollama/bench') return handleOllamaModel(req, res, 'bench');
       if (pathname === '/api/ollama/chat') return handleOllamaChat(req, res);
+      if (pathname === '/api/ai/exec') return handleAiExec(req, res);
       return send(req, res, 405, TEXT, 'Method not allowed\n', { Allow: 'GET, HEAD' });
     }
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(req, res, 405, TEXT, 'İzin verilmeyen yöntem\n', { Allow: 'GET, HEAD, POST' });
@@ -479,7 +502,12 @@ function main() {
       return sendJson(req, res, 200, await history.query(range));
     }
     if (pathname === '/api/terminal') {
-      return sendJson(req, res, 200, { available: await terminalAvailable(config.terminal.socket), idleMinutes: config.terminal.idleMinutes });
+      return sendJson(req, res, 200, {
+        available: await terminalAvailable(config.terminal.socket),
+        execAvailable: await terminalAvailable(config.terminal.execSocket),
+        user: (await readSystemStatus()).settings?.terminal?.user || null,
+        idleMinutes: config.terminal.idleMinutes,
+      });
     }
     if (pathname === '/api/services/available') {
       try {
