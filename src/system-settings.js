@@ -5,6 +5,8 @@
 export const WEEKDAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 export const UPDATE_MODES = ['off', 'security', 'all'];
 export const ACTIONS = ['update', 'reboot', 'refresh', 'report', 'self-update'];
+// Panel terminalinin açılacağı Linux kullanıcı adı
+export const TERM_USER = /^[a-z_][a-z0-9_-]{0,31}$/;
 // Ollama model adı, ör. "qwen3.5:4b" ya da "hf.co/kullanici/model:Q4_0"
 export const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -34,6 +36,7 @@ export function validateSystemSettings(input) {
     scheduledReboot: (v) => typeof v === 'object' && v !== null,
     smartTests: (v) => typeof v === 'object' && v !== null,
     report: (v) => typeof v === 'object' && v !== null,
+    terminal: (v) => typeof v === 'object' && v !== null,
   });
   errors.push(...top.errors);
   const value = top.value;
@@ -56,6 +59,12 @@ export function validateSystemSettings(input) {
     const r = validateObject(value.report, { enabled: isBool, time: isTime, model: (v) => v === '' || (typeof v === 'string' && MODEL_NAME.test(v)) });
     errors.push(...r.errors.map((e) => `report.${e}`));
     value.report = r.value;
+  }
+  if (value.terminal) {
+    const r = validateObject(value.terminal, { enabled: isBool, user: (v) => v === '' || (typeof v === 'string' && TERM_USER.test(v)) });
+    errors.push(...r.errors.map((e) => `terminal.${e}`));
+    if (r.value.enabled && !r.value.user) errors.push('terminal.user');
+    value.terminal = r.value;
   }
   return { errors, value };
 }
@@ -84,7 +93,7 @@ export function onCalendarMonthly(dayOfMonth, time) {
 // Debian/Ubuntu unattended-upgrades ayarı. Dosya 50unattended-upgrades'ten sonra okunur ve onu ezer.
 export function aptConfig({ updates, rebootAfterUpdate, rebootTime }) {
   const lines = [
-    '// Sunucu Durumu paneli tarafından yönetilir; elle değiştirmeyin, panelin Ayarlar bölümünü kullanın.',
+    '// Node Stats paneli tarafından yönetilir; elle değiştirmeyin, panelin Ayarlar bölümünü kullanın.',
     'APT::Periodic::Update-Package-Lists "1";',
     `APT::Periodic::Unattended-Upgrade "${updates === 'off' ? 0 : 1}";`,
     `Unattended-Upgrade::Automatic-Reboot "${rebootAfterUpdate ? 'true' : 'false'}";`,

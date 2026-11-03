@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Sunucu Durumu root yardımcısı.
+// Node Stats root yardımcısı.
 // Panel yetkisiz çalışır; sistem ayarı istediğinde kuyruğa bir istek dosyası bırakır. Bu yardımcı
 // (systemd path birimiyle tetiklenir) isteği izin verilen değerler listesine göre yeniden doğrular,
 // yalnızca önceden tanımlı işlemleri uygular ve sonucu panelin okuyacağı durum dosyasına yazar.
@@ -19,6 +19,7 @@ import {
   countAptUpgrades,
   onCalendarWeekly,
   onCalendarMonthly,
+  TERM_USER,
 } from '../src/system-settings.js';
 import { isNewer, parseVersion, repoFromUrl } from '../src/update-check.js';
 
@@ -104,7 +105,8 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
 
   async function detectPlatform() {
     if (platformOverride) return { ...platformOverride };
-    const [apt, dnf, systemctl, smartctl] = await Promise.all(['apt-get', 'dnf', 'systemctl', 'smartctl'].map(which));
+    const [apt, dnf, systemctl, smartctl, python3] = await Promise.all(['apt-get', 'dnf', 'systemctl', 'smartctl', 'python3'].map(which));
+    const termUnit = await access(path.join(files.units, TERM_SOCKET)).then(() => true, () => false);
     const packageManager = apt ? 'apt' : dnf ? 'dnf' : null;
     let unattendedInstalled = false;
     if (packageManager === 'apt' && !dryRun) {
@@ -118,6 +120,8 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
       updateNow: Boolean(packageManager),
       smartTests: Boolean(smartctl),
       unattendedInstalled,
+      terminal: Boolean(python3 && termUnit),
+      terminalUsers: await terminalUsers(),
     };
   }
 
@@ -125,6 +129,7 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
     scheduledReboot: { enabled: false, day: 'sun', time: '04:00' },
     smartTests: { enabled: false, shortDay: 'sun', longDay: 1, time: '03:00' },
     report: { enabled: false, time: '07:00', model: '' },
+    terminal: { enabled: false, user: '' },
     rebootTime: '04:00',
   };
 
@@ -137,6 +142,7 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
         scheduledReboot: { ...DEFAULT_STATE.scheduledReboot, ...saved.scheduledReboot },
         smartTests: { ...DEFAULT_STATE.smartTests, ...saved.smartTests },
         report: { ...DEFAULT_STATE.report, ...saved.report },
+        terminal: { ...DEFAULT_STATE.terminal, ...saved.terminal },
       };
     } catch {
       return structuredClone(DEFAULT_STATE);
@@ -166,13 +172,40 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
   const REPORT_TIMER = 'serverhealth-report.timer';
   async function setReportTimer(time) {
     // Persistent=true: sunucu o saatte kapalıysa rapor açılışta oluşturulur.
-    await writeAtomic(path.join(files.units, REPORT_TIMER), `[Unit]\nDescription=Sunucu Durumu - günlük rapor\n\n[Timer]\nOnCalendar=${onCalendarWeekly('daily', time)}\nPersistent=true\nUnit=serverhealth-report.service\n\n[Install]\nWantedBy=timers.target\n`);
+    await writeAtomic(path.join(files.units, REPORT_TIMER), `[Unit]\nDescription=Node Stats - günlük rapor\n\n[Timer]\nOnCalendar=${onCalendarWeekly('daily', time)}\nPersistent=true\nUnit=serverhealth-report.service\n\n[Install]\nWantedBy=timers.target\n`);
     await run(platform.systemctl, ['daemon-reload']);
     await run(platform.systemctl, ['enable', '--now', REPORT_TIMER]);
   }
   async function removeReportTimer() {
     await run(platform.systemctl, ['disable', '--now', REPORT_TIMER]);
     await unlink(path.join(files.units, REPORT_TIMER)).catch(() => {});
+    await run(platform.systemctl, ['daemon-reload']);
+  }
+
+  // Panel terminali: soket ve şablon servis kurulumla gelir; burada yalnızca kabuğun hangi
+  // kullanıcıyla açılacağı yazılır ve soket açılıp kapatılır.
+  const TERM_SOCKET = 'serverhealth-term.socket';
+  const termDropIn = () => path.join(files.units, 'serverhealth-term@.service.d', 'user.conf');
+
+  // Terminal için seçilebilecek kullanıcılar: gerçek giriş kabuğu olan normal hesaplar (root değil).
+  async function terminalUsers() {
+    const text = await readFile(P('/etc/passwd'), 'utf8').catch(() => '');
+    return text
+      .split('\n')
+      .map((l) => l.split(':'))
+      .filter((f) => f.length >= 7 && Number(f[2]) >= 1000 && Number(f[2]) < 65534 && TERM_USER.test(f[0]) && !/(nologin|false)$/.test(f[6]))
+      .map((f) => f[0]);
+  }
+
+  async function setTerminal(user) {
+    await writeAtomic(termDropIn(), `[Service]\nUser=${user}\n`);
+    await run(platform.systemctl, ['daemon-reload']);
+    await run(platform.systemctl, ['enable', '--now', TERM_SOCKET]);
+  }
+  async function removeTerminal() {
+    await run(platform.systemctl, ['disable', '--now', TERM_SOCKET]);
+    await run(platform.systemctl, ['stop', 'serverhealth-term@*.service']);
+    await unlink(termDropIn()).catch(() => {});
     await run(platform.systemctl, ['daemon-reload']);
   }
 
@@ -186,6 +219,7 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
       scheduledReboot: { ...state.scheduledReboot, ...requested.scheduledReboot },
       smartTests: { ...state.smartTests, ...requested.smartTests },
       report: { ...state.report, ...requested.report },
+      terminal: { ...state.terminal, ...requested.terminal },
     };
     const changes = [];
 
@@ -208,7 +242,7 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
       const r = next.scheduledReboot;
       if (r.enabled) {
         await setTimer('serverhealth-reboot', {
-          description: 'Sunucu Durumu - planlı yeniden başlatma',
+          description: 'Node Stats - planlı yeniden başlatma',
           exec: `${platform.systemctl} reboot`,
           onCalendar: onCalendarWeekly(r.day, r.time),
         });
@@ -223,8 +257,8 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
       if (s.enabled && !platform.smartTests) throw new Error('smartctl_missing');
       const helper = `${nodeBin} ${path.join(appDir, 'bin', 'serverhealth-helper.js')}`;
       if (s.enabled) {
-        await setTimer('serverhealth-smarttest-short', { description: 'Sunucu Durumu - haftalık kısa SMART testi', exec: `${helper} --smart-test short`, onCalendar: onCalendarWeekly(s.shortDay, s.time) });
-        await setTimer('serverhealth-smarttest-long', { description: 'Sunucu Durumu - aylık uzun SMART testi', exec: `${helper} --smart-test long`, onCalendar: onCalendarMonthly(s.longDay, s.time) });
+        await setTimer('serverhealth-smarttest-short', { description: 'Node Stats - haftalık kısa SMART testi', exec: `${helper} --smart-test short`, onCalendar: onCalendarWeekly(s.shortDay, s.time) });
+        await setTimer('serverhealth-smarttest-long', { description: 'Node Stats - aylık uzun SMART testi', exec: `${helper} --smart-test long`, onCalendar: onCalendarMonthly(s.longDay, s.time) });
       } else {
         await removeTimer('serverhealth-smarttest-short');
         await removeTimer('serverhealth-smarttest-long');
@@ -238,6 +272,18 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
       if (r.enabled) await setReportTimer(r.time);
       else await removeReportTimer();
       changes.push('report');
+    }
+
+    if (requested.terminal) {
+      const tm = next.terminal;
+      if (tm.enabled) {
+        if (!platform.terminal) throw new Error('terminal_unsupported');
+        if (!platform.terminalUsers.includes(tm.user)) throw new Error('terminal_user');
+        await setTerminal(tm.user);
+      } else {
+        await removeTerminal();
+      }
+      changes.push('terminal');
     }
 
     await writeAtomic(files.state, `${JSON.stringify(next, null, 2)}\n`, 0o644);
@@ -328,6 +374,7 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
         scheduledReboot: state.scheduledReboot,
         smartTests: state.smartTests,
         report: state.report,
+        terminal: state.terminal,
       },
       updates: extra.updates ?? previous.updates ?? null,
       running: extra.running ?? null,

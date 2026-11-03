@@ -1,5 +1,5 @@
 [Unit]
-Description=Sunucu Durumu - sistem ayarları yardımcısı (root)
+Description=Node Stats - sistem ayarları yardımcısı (root)
 Documentation=file:///opt/serverhealth/README.md
 After=network-online.target
 

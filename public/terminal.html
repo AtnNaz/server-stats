@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title data-i18n="term.title">Terminal</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/vendor/xterm.css">
+  <script src="/i18n.js" defer></script>
+  <script src="/vendor/xterm.js" defer></script>
+  <script src="/vendor/xterm-addon-fit.js" defer></script>
+  <script src="/terminal.js" defer></script>
+</head>
+<body class="term-page">
+  <div class="term-bar">
+    <span class="term-state" id="term-state"><i class="dot"></i><span id="term-state-text" data-i18n="term.connecting">Bağlanıyor…</span></span>
+    <button type="button" class="btn" id="term-reconnect" hidden><span data-i18n="term.reconnect">Yeniden bağlan</span></button>
+  </div>
+  <div class="term-screen" id="term-screen"></div>
+</body>
+</html>

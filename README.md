@@ -1,4 +1,4 @@
-# Sunucu Durumu
+# Node Stats
 
 Linux sunucunuzun anlık durumunu tarayıcıda gösteren, şifre korumalı küçük bir web paneli.
 
@@ -12,10 +12,13 @@ Geliştirici: [Ali Toprak Naz](https://github.com/AtnNaz) · Lisans: [PolyForm N
 - **Sıcaklık ve fanlar:** işlemci, NVMe diskler, anakart sensörleri ve fan devirleri
 - **Ekran kartı:** NVIDIA kartlarda kullanım, VRAM, sıcaklık, güç ve kartı kullanan süreçler (`nvidia-smi` varsa kendiliğinden açılır)
 - **Docker:** konteynerler ve durumları (isteğe bağlı)
+- **Geçmiş:** işlemci, bellek, sıcaklık, ağ, disk ve ekran kartı değerleri dakikalık olarak 30 gün saklanır; son 24 saat, 7 gün ve 30 günlük grafikler
+- **Terminal:** sunucunun komut satırı tarayıcıda (htop, nano, sudo çalışır); seçtiğiniz kullanıcıyla açılır, varsayılan kapalıdır (bkz. [Terminal](#terminal))
+- **Yapay zekâ:** sunucudaki [Ollama](https://ollama.com) ile sohbet, model indirme/silme ve hız testi; hiçbir şey dışarı gönderilmez
 
-Panel sol menüden bölümlere ayrılır (Genel bakış, Ekran kartı, Depolama, Ağ, Süreçler, Servisler); menüdeki rozetler sorunlu bölümleri işaret eder. Birkaç saniyede bir kendini günceller ve son 10 dakikanın grafiğini tutar. Giriş ekranından oturum açılır; aynı veriler `/api/stats` adresinden JSON olarak da alınabilir (bkz. [API](#api)).
+Panel sol menüden bölümlere ayrılır (Genel bakış, Geçmiş, Ekran kartı, Depolama, Ağ, Süreçler, Servisler, Terminal, Yapay zekâ, Raporlar); menüdeki rozetler sorunlu bölümleri işaret eder. Birkaç saniyede bir kendini günceller; canlı grafikler son 10 dakikayı, Geçmiş sayfası son 30 günü gösterir. Giriş ekranından oturum açılır; aynı veriler `/api/stats` adresinden JSON olarak da alınabilir (bkz. [API](#api)).
 
-Hiçbir npm paketine ihtiyaç duymaz; yalnızca Node.js'in kendi modüllerini kullanır ve bilgileri doğrudan `/proc`, `/sys` ve `systemctl` üzerinden okur. Tek dış bağlantı, iki günde bir GitHub'dan son sürüm numarasını sormaktır; bu istekte sunucuya dair hiçbir bilgi gönderilmez ve `"updateCheck": false` ile kapatılabilir.
+Hiçbir npm paketine ihtiyaç duymaz; yalnızca Node.js'in kendi modüllerini kullanır (terminal ekranı için [xterm.js](https://xtermjs.org) dosyaları `public/vendor` içinde gelir, MIT lisanslı) ve bilgileri doğrudan `/proc`, `/sys` ve `systemctl` üzerinden okur. Tek dış bağlantı, iki günde bir GitHub'dan son sürüm numarasını sormaktır; bu istekte sunucuya dair hiçbir bilgi gönderilmez ve `"updateCheck": false` ile kapatılabilir.
 
 ## Gereksinimler
 
@@ -104,6 +107,9 @@ Ayarlar `/etc/serverhealth/config.json` dosyasındadır. Değişiklikten sonra `
 | `trustProxy` | `false` | Ters vekil (nginx) arkasındaysa `true`; kilitleme için istemci IP'si `X-Real-IP` başlığından alınır |
 | `ollama.url` | `"http://127.0.0.1:11434"` | Günlük rapor için Ollama adresi; yalnızca bu makine olabilir |
 | `reports.dir` | `"/var/lib/serverhealth/reports"` | Günlük raporların yazıldığı klasör |
+| `history.retentionDays` | `30` | Geçmiş sayfası için dakikalık ölçümlerin kaç gün saklanacağı (1–365); dosyalar `/var/lib/serverhealth-panel/history` altındadır, günde yaklaşık 0,5 MB |
+| `terminal.idleMinutes` | `15` | Terminal bu kadar dakika tuşa basılmazsa kapanır |
+| `terminal.socket` | `"/run/serverhealth-term.sock"` | Terminal soketi (kurulum betiğiyle aynı kalmalı) |
 | `updateCheck` | `true` | İki günde bir GitHub'daki son sürüme bakar; yeni sürüm varsa Ayarlar → Hakkında'da gösterir |
 | `allowedHosts` | `[]` | Panelin kabul ettiği ek adlar (ör. `["durum.ornek.com"]`). Sunucunun kendi IP adresleri, makine adı ve `localhost` her zaman kabul edilir; başka adlarla gelen istekler (DNS rebinding) reddedilir. `["*"]` denetimi kapatır |
 | `auth.username` | `"admin"` | Panel kullanıcı adı |
@@ -151,6 +157,16 @@ Sunucuda [Ollama](https://ollama.com) kuruluysa panel her gün son 24 saatin sis
 - Kayıtlar sunucudan dışarı çıkmaz: rapor servisi ağda yalnızca bu makineye bağlanabilir (`IPAddressDeny=any`) ve Ollama adresi yalnızca `127.0.0.1`/`localhost` olabilir. Parola ve token benzeri değerler maskelenir.
 - Kayıt metinleri modele talimat olarak değil veri olarak verilir; modelin hiçbir yetkisi yoktur ve çıktısı panelde düz metin olarak gösterilir. Küçük modeller yanılabilir; önemli kararlardan önce rakamlara bakın.
 - Ollama yoksa ya da yanıt vermezse rapor yine hazırlanır, yalnızca rakamlardan oluşur.
+
+## Terminal
+
+Sol menüdeki **Terminal** sayfasından açılır: bir kullanıcı seçip "Terminali aç" dersiniz, root yardımcısı terminal soketini etkinleştirir. Kabuk o kullanıcıyla, normal bir SSH oturumu gibi çalışır; `sudo` her seferinde o kullanıcının şifresini terminalde sorar. Aynı sayfadan kapatılır.
+
+- Panel servisi kabuğu kendisi açmaz. systemd, `/run/serverhealth-term.sock` soketine gelen her bağlantı için seçilen kullanıcıyla ayrı bir `serverhealth-term@` servisi başlatır; sokete yalnızca panel servisinin grubu bağlanabilir. root seçilemez ve köprü root olarak kabuk açmayı reddeder.
+- Bağlantı yalnızca tarayıcı oturumuyla ve panelin kendi sayfasından kurulur (Basic Auth ve başka sitelerden gelen istekler reddedilir). Oturum kapanınca ya da `terminal.idleMinutes` boyunca tuşa basılmazsa terminal kapanır. Açılış ve kapanışlar `journalctl -u serverhealth` günlüğüne yazılır; yazılan komutlar kaydedilmez.
+- Terminalde yazdıklarınız (sudo şifresi dahil) ağda panelle aynı yoldan gider. Düz HTTP üzerinde kullanmayın; HTTPS, SSH tüneli ya da Tailscale gibi şifreli bir bağlantı kullanın. Panel şifrelenmemiş bağlantıda uyarı gösterir.
+- Terminal ekranı xterm.js çalışırken stil etiketi eklediği için yalnızca `/terminal` sayfasının güvenlik politikası satır içi stillere izin verir; betikler yine yalnızca panelin kendi dosyalarından yüklenir.
+- Gereksinim: `python3` (Ubuntu ve Debian'da hazır gelir).
 
 ## HTTPS
 
@@ -227,6 +243,8 @@ Let's Encrypt anahtarlarını yalnızca root okuyabildiği için systemd bunlar�
 - **Docker:** Docker soketine erişebilen herkes fiilen root yetkisine sahiptir. `--docker` seçeneği servis kullanıcısını `docker` grubuna ekler. Panel yalnızca konteyner listesini okur, ama uygulamada bir açık bulunursa bu yetki kötüye kullanılabilir. Gerçekten ihtiyacınız varsa açın.
 - Süreç komut satırları bazen parola içerebilir (ör. `mysql -pGizli`). Bunu istemiyorsanız `processes.showCommandLine` değerini `false` yapın.
 - Bir portu hangi sürecin dinlediği gösterilmez; bunun için root yetkisi gerekir.
+- **Terminal:** panelden açılan terminal, seçilen kullanıcının yapabildiği her şeyi yapabilir. Panel şifresini bilen biri bu kullanıcının kabuğuna erişir; güçlü bir panel şifresi kullanın, ihtiyacınız yoksa terminali kapalı tutun. Ayrıntılar: [Terminal](#terminal).
+- **Yapay zekâ:** sohbet ve model işlemleri yalnızca bu makinedeki Ollama'ya gider; sohbet geçmişi sunucuda değil, tarayıcınızda tutulur.
 
 ## Sorun giderme
 

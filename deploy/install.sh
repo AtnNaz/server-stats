@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sunucu Durumu panelini systemd servisi olarak kurar; tekrar çalıştırılırsa günceller.
+# Node Stats panelini systemd servisi olarak kurar; tekrar çalıştırılırsa günceller.
 # Kullanım: sudo ./deploy/install.sh [--docker]
 #   --docker  servis kullanıcısını docker grubuna ekler ve Docker kartını açar
 set -euo pipefail
@@ -176,6 +176,16 @@ install -d -m 0755 /var/lib/serverhealth
 install -d -m 2750 -o root -g "$SVC_USER" /var/lib/serverhealth/reports
 install -d -m 0750 -o "$SVC_USER" -g "$SVC_USER" /var/lib/serverhealth-panel
 rmdir /var/lib/serverhealth-panel/queue 2>/dev/null || true # eski sürümlerin kuyruğu
+
+# Panel terminali: soket yalnızca panelin grubuna açıktır; panelden açılana kadar etkin değildir.
+# Kabuğun hangi kullanıcıyla açılacağını root yardımcısı serverhealth-term@.service.d/user.conf ile yazar.
+install -m 0644 "$APP_DIR/deploy/serverhealth-term.socket" /etc/systemd/system/serverhealth-term.socket
+if PYTHON_BIN="$(command -v python3)"; then
+  sed "s|/usr/bin/python3|$PYTHON_BIN|g" "$APP_DIR/deploy/serverhealth-term@.service" > /etc/systemd/system/serverhealth-term@.service
+  chmod 0644 /etc/systemd/system/serverhealth-term@.service
+else
+  echo "Bilgi: python3 yok; panel terminali için gerekli: sudo $(pkg_hint python3)"
+fi
 
 # SMART disk sağlığı: smartctl root ister, bu yüzden ayrı bir zamanlayıcı 10 dakikada bir
 # /var/lib/serverhealth/smart.json dosyasını yazar; panel bu dosyayı yetkisiz okur.

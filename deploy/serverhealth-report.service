@@ -1,5 +1,5 @@
 [Unit]
-Description=Sunucu Durumu - günlük rapor (kayıtları yerel Ollama ile özetler)
+Description=Node Stats - günlük rapor (kayıtları yerel Ollama ile özetler)
 After=network.target ollama.service
 
 [Service]

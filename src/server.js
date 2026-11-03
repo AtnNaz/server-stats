@@ -16,6 +16,10 @@ import { setLanguage } from './i18n.js';
 import { createSessions } from './sessions.js';
 import { createSampler } from './sampler.js';
 import { createUpdateChecker, repoFromUrl } from './update-check.js';
+import { createHistoryStore, RANGES } from './history-store.js';
+import { createOllama, validateChat } from './ollama.js';
+import { upgrade } from './websocket.js';
+import { createTerminals, terminalAvailable } from './terminal.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -32,6 +36,8 @@ function readAbout() {
 const TEXT = 'text/plain; charset=utf-8';
 const JSON_TYPE = 'application/json; charset=utf-8';
 const MAX_BODY = 4096;
+// Sohbet isteği tüm konuşmayı taşır.
+const MAX_CHAT_BODY = 512 * 1024;
 
 // Yalnızca bu dosyalar sunulur; dosya yolu istekten türetilmez.
 // public: true olanlar oturum açmadan da yüklenebilir (giriş sayfası için).
@@ -43,16 +49,32 @@ const ASSETS = [
   { route: '/i18n.js', file: 'i18n.js', type: 'text/javascript; charset=utf-8', public: true },
   { route: '/style.css', file: 'style.css', type: 'text/css; charset=utf-8', public: true },
   { route: '/favicon.svg', file: 'favicon.svg', type: 'image/svg+xml', public: true },
+  { route: '/terminal', file: 'terminal.html', type: 'text/html; charset=utf-8', headers: 'terminal' },
+  { route: '/terminal.js', file: 'terminal.js', type: 'text/javascript; charset=utf-8' },
+  { route: '/vendor/xterm.js', file: 'vendor/xterm.js', type: 'text/javascript; charset=utf-8' },
+  { route: '/vendor/xterm-addon-fit.js', file: 'vendor/xterm-addon-fit.js', type: 'text/javascript; charset=utf-8' },
+  { route: '/vendor/xterm.css', file: 'vendor/xterm.css', type: 'text/css; charset=utf-8' },
 ];
 
 const SECURITY_HEADERS = {
   'Content-Security-Policy':
-    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; " +
+    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; " +
     "base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
   'Referrer-Policy': 'no-referrer',
   'Cache-Control': 'no-store',
+};
+
+// Terminal sayfası panelin içinde iframe olarak açılır; xterm.js çalışırken <style> etiketi eklediği için
+// satır içi stillere yalnızca bu sayfada izin verilir (betikler yine yalnızca 'self').
+const ASSET_HEADERS = {
+  terminal: {
+    'Content-Security-Policy':
+      "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; " +
+      "base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
+    'X-Frame-Options': 'SAMEORIGIN',
+  },
 };
 
 const isLoopback = (addr) => addr === '::1' || addr.startsWith('127.') || addr.startsWith('::ffff:127.');
@@ -70,20 +92,20 @@ function send(req, res, status, type, body, headers = {}) {
 const sendJson = (req, res, status, data, headers) => send(req, res, status, JSON_TYPE, JSON.stringify(data), headers);
 const redirect = (req, res, location) => send(req, res, 302, TEXT, '', { Location: location });
 
-function readBody(req) {
+function readBody(req, limit = MAX_BODY) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
+    // Sınır aşılınca gövde saklanmadan sonuna kadar okunur, böylece istemci 413 yanıtını alabilir;
+    // süre requestTimeout ile sınırlıdır.
     req.on('data', (chunk) => {
       size += chunk.length;
-      if (size > MAX_BODY) {
-        reject(Object.assign(new Error('İstek gövdesi çok büyük'), { status: 413 }));
-        req.destroy();
-      } else {
-        chunks.push(chunk);
-      }
+      if (size <= limit) chunks.push(chunk);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('end', () => {
+      if (size > limit) reject(Object.assign(new Error('İstek gövdesi çok büyük'), { status: 413 }));
+      else resolve(Buffer.concat(chunks).toString('utf8'));
+    });
     req.on('error', reject);
   });
 }
@@ -164,7 +186,9 @@ function main() {
 
   let auth = createAuth(effective.auth);
   const sessions = createSessions();
-  let sampler = createSampler(effective);
+  const history = createHistoryStore({ dir: path.join(stateDir, 'history'), retentionDays: config.history.retentionDays });
+  const samplerHooks = { onSample: (snapshot) => history.add(snapshot) };
+  let sampler = createSampler(effective, samplerHooks);
   const assets = loadAssets();
   const updates = createUpdateChecker({ repo: repoFromUrl(ABOUT.homepage), current: ABOUT.version, stateDir, enabled: config.updateCheck });
 
@@ -173,7 +197,7 @@ function main() {
     setLanguage(effective.language);
     if (SAMPLER_KEYS.some((k) => JSON.stringify(previous[k]) !== JSON.stringify(effective[k]))) {
       sampler.stop();
-      sampler = createSampler(effective);
+      sampler = createSampler(effective, samplerHooks);
       sampler.start();
     }
   }
@@ -195,63 +219,72 @@ function main() {
     return items.filter(Boolean);
   }
 
-  async function ollamaModels() {
-    try {
-      const res = await fetch(new URL('/api/tags', config.ollama.url), { redirect: 'error', signal: AbortSignal.timeout(3000) });
-      if (!res.ok) return { available: false, models: [] };
-      const data = await res.json();
-      const models = (data.models ?? [])
-        .filter((m) => typeof m?.name === 'string')
-        .map((m) => ({ name: m.name, size: Number(m.size) || null, parameters: m.details?.parameter_size ?? null }))
-        .sort((a, b) => a.name.localeCompare(b.name));
-      return { available: true, models };
-    } catch {
-      return { available: false, models: [] };
-    }
-  }
-
-  // Ekran kartı sayfasındaki Ollama kartı: yüklü modeller ve şu an bellekte olanlar.
-  async function ollamaInfo() {
-    const get = (p) => fetch(new URL(p, config.ollama.url), { redirect: 'error', signal: AbortSignal.timeout(3000) }).then((r) => (r.ok ? r.json() : null));
-    try {
-      const [version, tags, ps] = await Promise.all([get('/api/version').catch(() => null), get('/api/tags'), get('/api/ps').catch(() => null)]);
-      if (!tags) return { available: false };
-      return {
-        available: true,
-        version: typeof version?.version === 'string' ? version.version : null,
-        installed: (tags.models ?? [])
-          .filter((m) => typeof m?.name === 'string')
-          .map((m) => ({ name: m.name, size: Number(m.size) || null, modified: m.modified_at ?? null, parameters: m.details?.parameter_size ?? null, quantization: m.details?.quantization_level ?? null, family: m.details?.family ?? null }))
-          .sort((a, b) => a.name.localeCompare(b.name)),
-        loaded: (ps?.models ?? [])
-          .filter((m) => typeof m?.name === 'string')
-          .map((m) => ({ name: m.name, size: Number(m.size) || null, vram: Number(m.size_vram) || 0, expiresAt: m.expires_at ?? null, context: Number(m.context_length) || null })),
-      };
-    } catch {
-      return { available: false };
-    }
-  }
+  const ollama = createOllama({ url: config.ollama.url });
 
   // Bellekteki bir modeli boşaltır (Ollama: keep_alive 0). Yalnızca o an yüklü bir model kabul edilir.
   async function handleOllamaUnload(req, res) {
     const body = await readJsonBody(req, res);
     if (!body) return;
     if (typeof body.model !== 'string' || !MODEL_NAME.test(body.model)) return sendJson(req, res, 400, { code: 'invalid' });
-    const info = await ollamaInfo();
+    const info = await ollama.info();
     if (!info.loaded?.some((m) => m.name === body.model)) return sendJson(req, res, 404, { code: 'not_loaded' });
     try {
-      const r = await fetch(new URL('/api/generate', config.ollama.url), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: body.model, keep_alive: 0 }),
-        redirect: 'error',
-        signal: AbortSignal.timeout(15_000),
-      });
-      if (!r.ok) return sendJson(req, res, 502, { code: 'ollama' });
+      await ollama.unload(body.model);
       console.log(`Ollama modeli bellekten çıkarıldı: ${body.model}`);
       return sendJson(req, res, 200, { ok: true });
     } catch {
       return sendJson(req, res, 502, { code: 'ollama' });
+    }
+  }
+
+  // Model indirme/silme/hız testi: model adı her istekte doğrulanır.
+  async function handleOllamaModel(req, res, action) {
+    const body = await readJsonBody(req, res);
+    if (!body) return;
+    if (action === 'cancel') return sendJson(req, res, 200, { cancelled: ollama.cancelPull() });
+    if (typeof body.model !== 'string' || !MODEL_NAME.test(body.model)) return sendJson(req, res, 400, { code: 'invalid' });
+    try {
+      if (action === 'pull') {
+        if (!ollama.startPull(body.model)) return sendJson(req, res, 409, { code: 'busy' });
+        return sendJson(req, res, 202, { pull: ollama.pullStatus() });
+      }
+      if (action === 'delete') {
+        await ollama.remove(body.model);
+        console.log(`Ollama modeli silindi: ${body.model} (${clientIp(req)})`);
+        return sendJson(req, res, 200, { ok: true });
+      }
+      return sendJson(req, res, 200, await ollama.bench(body.model));
+    } catch (err) {
+      if (err.status === 404) return sendJson(req, res, 404, { code: 'not_found' });
+      return sendJson(req, res, 502, { code: 'ollama' });
+    }
+  }
+
+  // Sohbet yanıtı satır satır JSON olarak akar; tarayıcı bağlantıyı kapatınca Ollama isteği de iptal edilir.
+  async function handleOllamaChat(req, res) {
+    const body = await readJsonBody(req, res, MAX_CHAT_BODY);
+    if (!body) return;
+    const chat = validateChat(body);
+    if (!chat) return sendJson(req, res, 400, { code: 'invalid' });
+    const controller = new AbortController();
+    res.on('close', () => controller.abort());
+    let started = false;
+    const write = (obj) => {
+      if (!started) {
+        started = true;
+        res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'application/x-ndjson; charset=utf-8', 'X-Accel-Buffering': 'no' });
+      }
+      res.write(`${JSON.stringify(obj)}\n`);
+    };
+    try {
+      await ollama.chat(chat, { signal: controller.signal, write });
+      if (!started) write({ done: true, stats: null });
+      res.end();
+    } catch (err) {
+      if (controller.signal.aborted) return res.destroy();
+      if (!started) return sendJson(req, res, err.status === 404 ? 404 : 502, { code: err.status === 404 ? 'not_found' : 'ollama' });
+      write({ error: 'ollama' });
+      res.end();
     }
   }
 
@@ -275,7 +308,7 @@ function main() {
     await rename(tmp, path.join(queueDir, name));
   }
 
-  async function readJsonBody(req, res) {
+  async function readJsonBody(req, res, limit = MAX_BODY) {
     if (!sameOrigin(req)) {
       sendJson(req, res, 403, { code: 'origin' });
       return null;
@@ -286,7 +319,7 @@ function main() {
     }
     let body;
     try {
-      body = JSON.parse(await readBody(req));
+      body = JSON.parse(await readBody(req, limit));
     } catch (err) {
       sendJson(req, res, err.status ?? 400, { code: 'bad_request' });
       return null;
@@ -368,6 +401,11 @@ function main() {
       if (pathname === '/api/actions') return handleAction(req, res);
       if (pathname === '/api/update-check') return handleUpdateCheck(req, res);
       if (pathname === '/api/ollama/unload') return handleOllamaUnload(req, res);
+      if (pathname === '/api/ollama/pull') return handleOllamaModel(req, res, 'pull');
+      if (pathname === '/api/ollama/pull/cancel') return handleOllamaModel(req, res, 'cancel');
+      if (pathname === '/api/ollama/delete') return handleOllamaModel(req, res, 'delete');
+      if (pathname === '/api/ollama/bench') return handleOllamaModel(req, res, 'bench');
+      if (pathname === '/api/ollama/chat') return handleOllamaChat(req, res);
       return send(req, res, 405, TEXT, 'Method not allowed\n', { Allow: 'GET, HEAD' });
     }
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(req, res, 405, TEXT, 'İzin verilmeyen yöntem\n', { Allow: 'GET, HEAD, POST' });
@@ -416,8 +454,16 @@ function main() {
         return sendJson(req, res, 404, { code: 'not_found' });
       }
     }
-    if (pathname === '/api/ollama/models') return sendJson(req, res, 200, await ollamaModels());
-    if (pathname === '/api/ollama') return sendJson(req, res, 200, await ollamaInfo());
+    if (pathname === '/api/ollama/models') return sendJson(req, res, 200, await ollama.models());
+    if (pathname === '/api/ollama') return sendJson(req, res, 200, await ollama.info());
+    if (pathname === '/api/history') {
+      const range = new URL(req.url, 'http://localhost').searchParams.get('range') ?? '1d';
+      if (!Object.hasOwn(RANGES, range)) return sendJson(req, res, 400, { code: 'invalid' });
+      return sendJson(req, res, 200, await history.query(range));
+    }
+    if (pathname === '/api/terminal') {
+      return sendJson(req, res, 200, { available: await terminalAvailable(config.terminal.socket), idleMinutes: config.terminal.idleMinutes });
+    }
     if (pathname === '/api/services/available') {
       try {
         return sendJson(req, res, 200, { units: await listServiceUnits() });
@@ -431,7 +477,7 @@ function main() {
 
   function sendAsset(req, res, asset) {
     const body = asset.type.startsWith('text/html') ? Buffer.from(asset.body.toString('utf8').replace('<html lang="tr">', `<html lang="${effective.language}">`)) : asset.body;
-    return send(req, res, 200, asset.type, body);
+    return send(req, res, 200, asset.type, body, ASSET_HEADERS[asset.headers]);
   }
 
   async function handleSettings(req, res) {
@@ -513,6 +559,30 @@ function main() {
   server.headersTimeout = 10_000;
   server.requestTimeout = 15_000;
 
+  // Terminal: yalnızca tarayıcı oturumu (çerez) ve aynı kaynaktan gelen WebSocket isteği kabul edilir.
+  // Origin denetimi, başka bir sitenin kullanıcının tarayıcısı üzerinden terminale bağlanmasını engeller.
+  const terminals = createTerminals({
+    socketPath: config.terminal.socket,
+    idleMinutes: config.terminal.idleMinutes,
+  });
+  server.on('upgrade', (req, socket) => {
+    const reject = (status, text) => {
+      socket.end(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+    };
+    socket.on('error', () => socket.destroy());
+    const { pathname } = new URL(req.url, 'http://localhost');
+    if (pathname !== '/api/terminal') return reject(404, 'Not Found');
+    if (!hostAllowed(req) || !sameOrigin(req)) return reject(403, 'Forbidden');
+    const cookie = req.headers.cookie;
+    if (!sessions.get(cookie)) return reject(401, 'Unauthorized');
+    terminalAvailable(config.terminal.socket).then((available) => {
+      if (!available) return reject(503, 'Service Unavailable');
+      const ws = upgrade(req, socket);
+      if (!ws) return reject(400, 'Bad Request');
+      terminals.attach(ws, { ip: clientIp(req), sessionAlive: () => Boolean(sessions.get(cookie)) });
+    });
+  });
+
   server.on('error', (err) => {
     if (err.code === 'EADDRINUSE') console.error(`Port ${config.port} başka bir uygulama tarafından kullanılıyor.`);
     else if (err.code === 'EACCES') console.error(`Port ${config.port} için yetki yok (1024 altındaki portlar ek yetki ister).`);
@@ -522,7 +592,7 @@ function main() {
 
   server.listen(config.port, config.host, () => {
     const scheme = config.tls.cert ? 'https' : 'http';
-    console.log(`Sunucu Durumu paneli ${scheme}://${config.host}:${config.port}/ adresinde çalışıyor (yapılandırma: ${configPath})`);
+    console.log(`Node Stats paneli ${scheme}://${config.host}:${config.port}/ adresinde çalışıyor (yapılandırma: ${configPath})`);
     if (!config.tls.cert && !isLoopback(config.host)) {
       console.warn('Uyarı: TLS kapalı, şifre ağda düz metin olarak gider. HTTPS açın ya da host: "127.0.0.1" ile nginx veya SSH tüneli arkasına alın.');
     }
@@ -533,6 +603,8 @@ function main() {
   const shutdown = () => {
     sampler.stop();
     updates.stop();
+    terminals.closeAll();
+    history.flush();
     server.close(() => process.exit(0));
     server.closeAllConnections?.();
     setTimeout(() => process.exit(0), 3000).unref();

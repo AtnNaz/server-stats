@@ -32,7 +32,7 @@ function historyPoint(s) {
 }
 
 // Verileri arka planda düzenli aralıkla toplar; istekler yalnızca son anlık görüntüyü okur.
-export function createSampler(config) {
+export function createSampler(config, { onSample } = {}) {
   const intervalMs = config.intervalSeconds * 1000;
   const historySize = Math.ceil((config.historyMinutes * 60) / config.intervalSeconds);
   const gpu = config.gpu.enabled ? createGpuCollector() : null;
@@ -87,6 +87,11 @@ export function createSampler(config) {
     if (!gpu) snapshot.gpu = { disabled: true };
     history.push(historyPoint(snapshot));
     if (history.length > historySize) history.shift();
+    try {
+      onSample?.(snapshot);
+    } catch (err) {
+      console.warn(`Örnek kaydedilemedi: ${err.message}`);
+    }
 
     if (stopped) return;
     // İlk örnek yalnızca sayaçları hazırlar; oranlar için ikinci örneği hızlıca al.

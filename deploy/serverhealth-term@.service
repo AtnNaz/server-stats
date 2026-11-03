@@ -1,0 +1,13 @@
+[Unit]
+Description=Node Stats - panel terminali oturumu
+CollectMode=inactive-or-failed
+
+[Service]
+# Kullanıcı, root yardımcısının yazdığı serverhealth-term@.service.d/user.conf ile belirlenir.
+# Köprü root olarak kabuk açmayı reddeder.
+User=nobody
+ExecStart=/usr/bin/python3 /opt/serverhealth/bin/serverhealth-pty.py
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+KillMode=control-group

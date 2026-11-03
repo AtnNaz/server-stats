@@ -1,5 +1,5 @@
 [Unit]
-Description=Sunucu Durumu - panel isteklerini izle
+Description=Node Stats - panel isteklerini izle
 
 [Path]
 DirectoryNotEmpty=/var/lib/serverhealth-queue

@@ -1,5 +1,5 @@
 [Unit]
-Description=Sunucu Durumu - SMART disk sağlığı toplayıcı
+Description=Node Stats - SMART disk sağlığı toplayıcı
 Documentation=file:///opt/serverhealth/README.md
 After=local-fs.target
 

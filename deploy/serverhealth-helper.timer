@@ -1,5 +1,5 @@
 [Unit]
-Description=Sunucu Durumu - sistem durumunu (bekleyen güncellemeler vb.) saatte bir yenile
+Description=Node Stats - sistem durumunu (bekleyen güncellemeler vb.) saatte bir yenile
 
 [Timer]
 OnBootSec=2min

@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -159,4 +160,44 @@ test('istek gövdesi nesne değilse ve Host tanınmıyorsa istek reddedilir', as
   });
   assert.equal(status, 403);
   assert.equal((await fetch(`${base}/healthz`)).status, 200);
+});
+
+// Ham HTTP isteğiyle WebSocket yükseltmesi dener; yanıtın durum kodunu döner.
+function upgradeStatus(base, headers) {
+  const { hostname, port } = new URL(base);
+  return new Promise((resolve, reject) => {
+    const req = http.request({ hostname, port, path: '/api/terminal', headers: { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Version': '13', 'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==', ...headers } });
+    req.on('response', (res) => resolve(res.statusCode));
+    req.on('upgrade', (res, socket) => {
+      socket.destroy();
+      resolve(res.statusCode);
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+test('geçmiş ve terminal: oturum ve aynı kaynak şartı, terminal sayfasının ayrı güvenlik politikası', async (t) => {
+  const { base } = await startServer(t);
+  assert.equal((await fetch(`${base}/api/history?range=1d`)).status, 401);
+  assert.equal(await upgradeStatus(base, { Origin: base }), 401);
+  const cookie = await signIn(base);
+  assert.equal(await upgradeStatus(base, { Cookie: cookie, Origin: 'http://evil.example' }), 403);
+  assert.equal(await upgradeStatus(base, { Cookie: cookie }), 403);
+  // Soket yoksa (terminal kapalı) bağlantı kurulmaz.
+  assert.equal(await upgradeStatus(base, { Cookie: cookie, Origin: base }), 503);
+
+  const history = await fetch(`${base}/api/history?range=7d`, { headers: { Cookie: cookie } });
+  assert.equal(history.status, 200);
+  assert.equal((await history.json()).step, 30 * 60_000);
+  assert.equal((await fetch(`${base}/api/history?range=__proto__`, { headers: { Cookie: cookie } })).status, 400);
+  assert.equal((await (await fetch(`${base}/api/terminal`, { headers: { Cookie: cookie } })).json()).available, false);
+
+  const page = await fetch(`${base}/terminal`, { headers: { Cookie: cookie } });
+  assert.match(page.headers.get('content-security-policy'), /style-src 'self' 'unsafe-inline'.*frame-ancestors 'self'/);
+  assert.equal(page.headers.get('x-frame-options'), 'SAMEORIGIN');
+  assert.match((await fetch(`${base}/`, { headers: { Cookie: cookie } })).headers.get('content-security-policy'), /frame-ancestors 'none'/);
+
+  const chat = await post(base, '/api/ollama/chat', { model: 'a', messages: [{ role: 'user', content: 'x'.repeat(600_000) }] }, cookie);
+  assert.equal(chat.status, 413);
 });

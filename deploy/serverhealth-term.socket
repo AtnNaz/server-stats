@@ -1,0 +1,15 @@
+[Unit]
+Description=Node Stats - panel terminali soketi
+# Yalnızca panel servisinin grubu bağlanabilir; panelde Ayarlar → Terminal'den açılır.
+
+[Socket]
+ListenStream=/run/serverhealth-term.sock
+SocketUser=root
+SocketGroup=serverhealth
+SocketMode=0660
+Accept=yes
+MaxConnections=4
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

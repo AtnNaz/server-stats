@@ -167,8 +167,8 @@ const tooltip = $('tooltip');
 
 // Zaman serisi çizgi grafiği: ince çizgiler, hafif alan dolgusu, artı imleci ve ipucu kutusu.
 class LineChart {
-  constructor(canvas, { max = null, format = String, axes = true, interactive = true } = {}) {
-    Object.assign(this, { canvas, max, format, axes, interactive, data: null, hover: null });
+  constructor(canvas, { max = null, format = String, axes = true, interactive = true, timeLabel = timeFormat } = {}) {
+    Object.assign(this, { canvas, max, format, axes, interactive, timeLabel, data: null, hover: null });
     if (!interactive) return;
     canvas.addEventListener('pointermove', (e) => this.onPointer(e));
     canvas.addEventListener('pointerleave', () => this.clearHover());
@@ -338,7 +338,7 @@ class LineChart {
     const py = clientY ?? rect.top + g.padTop + 10;
     fill(
       tooltip,
-      h('div', { class: 'tt-time' }, timeFormat.format(new Date(this.data.times[i]))),
+      h('div', { class: 'tt-time' }, this.timeLabel.format(new Date(this.data.times[i]))),
       this.data.series.map((s) =>
         h('div', { class: 'tt-row' }, h('i', { class: `key ${s.key}` }), h('strong', null, s.values[i] == null ? '—' : this.format(s.values[i])), h('span', { class: 'tt-name' }, s.name)),
       ),
@@ -2338,16 +2338,551 @@ function leaveReports() {
   clearTimeout(reportsTimer);
 }
 
+// ---------- Uzun süreli geçmiş ----------
+
+const HISTORY_RANGES = [
+  ['1d', 'histr.range1d'],
+  ['7d', 'histr.range7d'],
+  ['30d', 'histr.range30d'],
+];
+const historyTimeLabel = new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+const historyState = { range: '1d', data: null, iface: null, gpu: null };
+const historyCharts = {};
+let historyTimer = null;
+let historyBuilt = false;
+
+const avg = (values) => {
+  const v = values.filter((x) => x != null);
+  return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+};
+const peak = (values) => {
+  const v = values.filter((x) => x != null);
+  return v.length ? Math.max(...v) : null;
+};
+
+function historyCard(id, titleKey, iconName, legend, options) {
+  const canvas = h('canvas', { class: 'chart', tabindex: '0', 'aria-label': t(titleKey) });
+  const chart = new LineChart(canvas, { ...options, timeLabel: historyTimeLabel });
+  historyCharts[id] = chart;
+  allCharts.push(chart);
+  const meta = h('span', { class: 'card-meta' });
+  const tools = h('div', { class: 'card-tools' });
+  let start;
+  const card = h(
+    'article',
+    { class: 'card' },
+    h('div', { class: 'card-head' }, h('h2', { class: 'card-title' }, icon(iconName), h('span', null, t(titleKey))), meta),
+    h('div', { class: 'hist-legend' }, h('div', { class: 'legend' }, legend.map(([key, label]) => h('span', null, h('i', { class: `key ${key}` }), label))), tools),
+    h('div', { class: 'chart-wrap' }, canvas),
+    h('div', { class: 'chart-x' }, (start = h('span', null, '—')), h('span', null, t('common.now'))),
+  );
+  return { card, chart, meta, tools, start };
+}
+
+function buildHistory() {
+  const seg = segEl(
+    HISTORY_RANGES.map(([v, k]) => [v, t(k)]),
+    historyState.range,
+    (v) => {
+      historyState.range = v;
+      loadHistory();
+    },
+  );
+  const cards = [
+    historyCard('load', 'histr.load', 'chip', [['s1', t('histr.cpu')], ['s2', t('histr.mem')]], { max: 100, format: pctAxis }),
+    historyCard('temp', 'histr.temp', 'target', [['s1', t('histr.cpuTemp')], ['s2', t('histr.diskTemp')]], { format: (v) => `${num0.format(v)} °C` }),
+    historyCard('net', 'histr.net', 'globe', [['s1', t('histr.rx')], ['s2', t('histr.tx')]], { format: fmtRate }),
+    historyCard('io', 'histr.io', 'disk', [['s1', t('histr.read')], ['s2', t('histr.write')]], { format: fmtRate }),
+    historyCard('gpu', 'histr.gpu', 'chip', [['s1', t('histr.gpuUtil')], ['s2', t('histr.gpuMem')]], { max: 100, format: pctAxis }),
+  ];
+  historyState.cards = Object.fromEntries(cards.map((c, i) => [['load', 'temp', 'net', 'io', 'gpu'][i], c]));
+  fill(
+    $('history-root'),
+    h('div', { class: 'hist-toolbar' }, seg.el, h('span', { class: 'muted small', id: 'hist-note' })),
+    h('div', { class: 'hist-grid' }, cards.map((c) => c.card)),
+  );
+  historyBuilt = true;
+}
+
+async function loadHistory() {
+  clearTimeout(historyTimer);
+  const res = await api(`/api/history?range=${historyState.range}`);
+  if (res.ok) {
+    historyState.data = res.data;
+    renderHistory();
+  } else {
+    $('hist-note').textContent = t('histr.error');
+  }
+  if (currentRoute() === 'gecmis') historyTimer = setTimeout(loadHistory, 60_000);
+}
+
+// Ağ ve ekran kartı için seçim kutusu: en çok verisi olan seçenek varsayılandır.
+function pickSelect(tools, options, current, onChange) {
+  if (options.length < 2) return fill(tools);
+  const sel = selectEl(options, current);
+  sel.addEventListener('change', () => onChange(sel.value));
+  fill(tools, sel);
+}
+
+function renderHistory() {
+  const { points } = historyState.data;
+  const times = points.map((p) => p.t);
+  const capacity = points.length;
+  const cards = historyState.cards;
+  const has = points.some((p) => p.cpu != null);
+  $('hist-note').textContent = has ? t('histr.note') : t('histr.empty');
+  const set = (id, series) => cards[id].chart.set({ times, capacity, series });
+  const startLabel = times.length ? historyTimeLabel.format(new Date(times[0])) : '—';
+  for (const c of Object.values(cards)) c.start.textContent = startLabel;
+  const summary = (values, format) => (peak(values) == null ? '' : t('histr.summary', { avg: format(avg(values)), max: format(peak(values)) }));
+
+  const cpu = points.map((p) => p.cpu ?? null);
+  set('load', [
+    { name: t('histr.cpu'), key: 's1', color: '--series-1', fill: true, values: cpu },
+    { name: t('histr.mem'), key: 's2', color: '--series-2', values: points.map((p) => p.mem ?? null) },
+  ]);
+  cards.load.meta.textContent = summary(cpu, fmtPct);
+
+  const cpuTemp = points.map((p) => p.cpuTemp ?? null);
+  set('temp', [
+    { name: t('histr.cpuTemp'), key: 's1', color: '--series-1', values: cpuTemp },
+    { name: t('histr.diskTemp'), key: 's2', color: '--series-2', values: points.map((p) => p.diskTemp ?? null) },
+  ]);
+  cards.temp.meta.textContent = summary(cpuTemp, (v) => `${num0.format(v)} °C`);
+
+  const traffic = (name) => points.reduce((s, p) => s + (p.net?.[name]?.[0] ?? 0) + (p.net?.[name]?.[1] ?? 0), 0);
+  const ifaces = [...new Set(points.flatMap((p) => Object.keys(p.net ?? {})))].sort((a, b) => traffic(b) - traffic(a));
+  if (!ifaces.includes(historyState.iface)) historyState.iface = ifaces[0] ?? null;
+  pickSelect(cards.net.tools, ifaces.map((n) => [n, n]), historyState.iface, (v) => {
+    historyState.iface = v;
+    renderHistory();
+  });
+  const rx = points.map((p) => p.net?.[historyState.iface]?.[0] ?? null);
+  set('net', [
+    { name: t('histr.rx'), key: 's1', color: '--series-1', fill: true, values: rx },
+    { name: t('histr.tx'), key: 's2', color: '--series-2', values: points.map((p) => p.net?.[historyState.iface]?.[1] ?? null) },
+  ]);
+  cards.net.meta.textContent = summary(rx, fmtRate);
+
+  const total = (p, i) => {
+    const values = Object.values(p.io ?? {}).map((v) => v[i]).filter((v) => v != null);
+    return values.length ? values.reduce((a, b) => a + b, 0) : null;
+  };
+  const read = points.map((p) => total(p, 0));
+  set('io', [
+    { name: t('histr.read'), key: 's1', color: '--series-1', fill: true, values: read },
+    { name: t('histr.write'), key: 's2', color: '--series-2', values: points.map((p) => total(p, 1)) },
+  ]);
+  cards.io.meta.textContent = t('histr.allDisks');
+
+  const gpuNames = Object.fromEntries((lastData?.snapshot?.gpu?.gpus ?? []).map((g) => [g.id, g.name]));
+  const gpus = [...new Set(points.flatMap((p) => Object.keys(p.gpu ?? {})))];
+  const util = (id) => points.filter((p) => p.gpu?.[id]?.[0] != null).length;
+  gpus.sort((a, b) => util(b) - util(a));
+  cards.gpu.card.hidden = !gpus.length;
+  if (!gpus.includes(historyState.gpu)) historyState.gpu = gpus[0] ?? null;
+  pickSelect(cards.gpu.tools, gpus.map((id) => [id, gpuNames[id] ?? id]), historyState.gpu, (v) => {
+    historyState.gpu = v;
+    renderHistory();
+  });
+  const gpuUtil = points.map((p) => p.gpu?.[historyState.gpu]?.[0] ?? null);
+  set('gpu', [
+    { name: t('histr.gpuUtil'), key: 's1', color: '--series-1', fill: true, values: gpuUtil },
+    { name: t('histr.gpuMem'), key: 's2', color: '--series-2', values: points.map((p) => p.gpu?.[historyState.gpu]?.[1] ?? null) },
+  ]);
+  const gpuTemp = points.map((p) => p.gpu?.[historyState.gpu]?.[2] ?? null);
+  cards.gpu.meta.textContent = peak(gpuTemp) == null ? summary(gpuUtil, fmtPct) : t('histr.gpuTempMax', { max: num0.format(peak(gpuTemp)) });
+}
+
+function enterHistory() {
+  if (!historyBuilt) buildHistory();
+  loadHistory();
+}
+
+function leaveHistory() {
+  clearTimeout(historyTimer);
+}
+
+// ---------- Yapay zekâ: Ollama sohbeti ve modeller ----------
+
+const CHAT_KEY = 'nodestats-chat';
+const aiState = { info: null, model: null, think: false, messages: [], streaming: null, bench: {} };
+let aiTimer = null;
+let aiBuilt = false;
+const ai = {};
+
+function loadChat() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(CHAT_KEY) ?? 'null');
+    if (saved && Array.isArray(saved.messages)) {
+      aiState.messages = saved.messages.filter((m) => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string');
+      aiState.model = typeof saved.model === 'string' ? saved.model : null;
+      aiState.think = saved.think === true;
+    }
+  } catch {
+    /* kayıt yoksa boş sohbetle başlanır */
+  }
+}
+
+function saveChat() {
+  try {
+    localStorage.setItem(CHAT_KEY, JSON.stringify({ model: aiState.model, think: aiState.think, messages: aiState.messages.slice(-100) }));
+  } catch {
+    /* depolama kapalıysa sohbet bu sekmeyle sınırlı kalır */
+  }
+}
+
+function chatStats(stats) {
+  if (!stats?.generateRate) return null;
+  return t('ai.stats', { n: num0.format(stats.generated ?? 0), rate: num1.format(stats.generateRate) });
+}
+
+function messageEl(m) {
+  const body = h('div', { class: 'chat-text' }, m.content);
+  const thinking = m.thinking ? h('details', { class: 'chat-think' }, h('summary', null, t('ai.thinking')), h('div', { class: 'chat-text' }, m.thinking)) : null;
+  const stats = m.stats ? h('div', { class: 'muted small' }, chatStats(m.stats)) : null;
+  const error = m.error ? errorBox(t(m.error)) : null;
+  return h('div', { class: `chat-msg ${m.role}` }, h('div', { class: 'chat-role' }, m.role === 'user' ? t('ai.you') : m.model ?? t('ai.assistant')), thinking, body, stats, error);
+}
+
+function renderChat() {
+  const log = ai.log;
+  const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
+  fill(log, aiState.messages.length ? aiState.messages.map(messageEl) : h('p', { class: 'placeholder' }, t('ai.empty')));
+  if (nearBottom || aiState.streaming) log.scrollTop = log.scrollHeight;
+  ai.send.textContent = t(aiState.streaming ? 'ai.stop' : 'ai.send');
+  ai.send.className = `btn ${aiState.streaming ? 'btn-danger' : 'btn-accent'}`;
+  ai.input.disabled = Boolean(aiState.streaming);
+  ai.clear.disabled = Boolean(aiState.streaming) || !aiState.messages.length;
+}
+
+async function sendChat() {
+  if (aiState.streaming) return aiState.streaming.abort();
+  const text = ai.input.value.trim();
+  if (!text || !aiState.model) return;
+  ai.input.value = '';
+  aiState.messages.push({ role: 'user', content: text });
+  const reply = { role: 'assistant', content: '', thinking: '', model: aiState.model };
+  const history = aiState.messages.map(({ role, content }) => ({ role, content }));
+  aiState.messages.push(reply);
+  const controller = new AbortController();
+  aiState.streaming = controller;
+  renderChat();
+  try {
+    const res = await fetch(new URL('/api/ollama/chat', window.location.origin), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: aiState.model, messages: history, think: aiState.think }),
+      signal: controller.signal,
+    });
+    if (res.status === 401) return window.location.replace(`/login${window.location.hash}`);
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      reply.error = data.code === 'not_found' ? 'ai.errNotFound' : 'ai.errFailed';
+    } else {
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+        for (const line of lines) {
+          if (!line) continue;
+          const msg = JSON.parse(line);
+          if (msg.t) reply.content += msg.t;
+          if (msg.th) reply.thinking += msg.th;
+          if (msg.done) reply.stats = msg.stats;
+          if (msg.error) reply.error = 'ai.errFailed';
+        }
+        renderChat();
+      }
+    }
+  } catch {
+    if (controller.signal.aborted) reply.stopped = true;
+    else reply.error = 'ai.errFailed';
+  } finally {
+    if (reply.stopped && reply.content) reply.content += ` ${t('ai.stoppedMark')}`;
+    if (!reply.content && !reply.error) reply.error = reply.stopped ? 'ai.stopped' : 'ai.errFailed';
+    aiState.streaming = null;
+    // Hatalı yanıtlar bir sonraki isteğin geçmişine girmez.
+    if (reply.error && !reply.content) aiState.messages.pop();
+    saveChat();
+    renderChat();
+    if (reply.error && !reply.content) ai.log.append(errorBox(t(reply.error)));
+    ai.input.focus();
+  }
+}
+
+function buildAi() {
+  loadChat();
+  ai.model = h('select', { class: 'select', 'aria-label': t('ai.model') });
+  ai.model.addEventListener('change', () => {
+    aiState.model = ai.model.value;
+    saveChat();
+  });
+  const think = switchEl(aiState.think, t('ai.think'));
+  think.input.addEventListener('change', () => {
+    aiState.think = think.input.checked;
+    saveChat();
+  });
+  ai.clear = button(t('ai.newChat'), null, () => {
+    aiState.messages = [];
+    saveChat();
+    renderChat();
+  });
+  ai.log = h('div', { class: 'chat-log', 'aria-live': 'polite' });
+  ai.input = h('textarea', { class: 'input chat-input', rows: '3', placeholder: t('ai.placeholder'), 'aria-label': t('ai.placeholder') });
+  ai.input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      sendChat();
+    }
+  });
+  ai.send = button(t('ai.send'), 'accent', sendChat);
+  const chatCard = h(
+    'article',
+    { class: 'card chat-card' },
+    h('div', { class: 'card-head' }, h('h2', { class: 'card-title' }, icon('chip'), h('span', null, t('ai.chat'))), h('div', { class: 'chat-tools' }, ai.model, think.el, ai.clear)),
+    ai.log,
+    h('div', { class: 'chat-compose' }, ai.input, ai.send),
+  );
+
+  ai.pullInput = inputEl('text', '', { placeholder: t('ai.pullPlaceholder'), 'aria-label': t('ai.pullPlaceholder'), spellcheck: 'false', autocomplete: 'off' });
+  ai.pullButton = button(t('ai.pull'), 'accent', startPull);
+  ai.pullInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') startPull();
+  });
+  ai.pullStatus = h('div', { class: 'pull-status' });
+  ai.models = h('div');
+  const modelsCard = h(
+    'article',
+    { class: 'card' },
+    h('div', { class: 'card-head' }, h('h2', { class: 'card-title' }, icon('download'), h('span', null, t('ai.models'))), (ai.meta = h('span', { class: 'card-meta' }))),
+    h('div', { class: 'pull-row' }, ai.pullInput, ai.pullButton),
+    h('p', { class: 'muted small' }, t('ai.pullHint')),
+    ai.pullStatus,
+    ai.models,
+  );
+  fill($('ai-root'), h('div', { class: 'ai-grid' }, chatCard, modelsCard));
+  aiBuilt = true;
+  renderChat();
+}
+
+async function startPull() {
+  const model = ai.pullInput.value.trim();
+  if (!model) return;
+  ai.pullButton.disabled = true;
+  const res = await api('/api/ollama/pull', { model });
+  ai.pullButton.disabled = false;
+  if (res.ok) ai.pullInput.value = '';
+  else fill(ai.pullStatus, errorBox(t(res.data.code === 'busy' ? 'ai.pullBusy' : 'ai.pullInvalid')));
+  loadAi();
+}
+
+function renderPull(p) {
+  if (!p) return fill(ai.pullStatus);
+  const recent = p.done && Date.now() - p.finishedAt > 10 * 60_000;
+  if (recent) return fill(ai.pullStatus);
+  const pct = p.total ? Math.round((p.completed / p.total) * 100) : null;
+  const head = h('div', { class: 'pull-head' }, h('strong', null, p.model), h('span', { class: 'muted small' }, p.done ? '' : pct != null ? `${pct}% · ${fmtBytes(p.completed)} / ${fmtBytes(p.total)}` : p.status));
+  if (p.done) {
+    const ok = !p.error;
+    return fill(ai.pullStatus, head, ok ? tag('ok', 'ok', t('ai.pullDone')) : errorBox(t(`ai.pullErr.${['not_found', 'cancelled', 'stalled'].includes(p.error) ? p.error : 'other'}`)));
+  }
+  const cancel = button(t('ai.cancel'), null, async () => {
+    cancel.disabled = true;
+    await api('/api/ollama/pull/cancel', {});
+    loadAi();
+  });
+  fill(ai.pullStatus, head, meter(pct ?? 0, 101, 101), h('div', { class: 'pull-actions' }, cancel));
+}
+
+function renderModels(d) {
+  ai.meta.textContent = d.version ? `Ollama v${d.version}` : 'Ollama';
+  const names = d.installed.map((m) => m.name);
+  const current = aiState.model && names.includes(aiState.model) ? aiState.model : (d.loaded[0]?.name ?? names[0] ?? null);
+  if (current !== aiState.model || ai.model.options.length !== names.length) {
+    aiState.model = current;
+    fill(ai.model, names.length ? names.map((n) => h('option', { value: n }, n)) : h('option', { value: '' }, t('ai.noModels')));
+    ai.model.value = current ?? '';
+  }
+  ai.send.disabled = !current && !aiState.streaming;
+  const loaded = new Set(d.loaded.map((m) => m.name));
+  if (!d.installed.length) return fill(ai.models, h('p', { class: 'muted' }, t('oll.noneInstalled')));
+  fill(
+    ai.models,
+    h(
+      'ul',
+      { class: 'model-list' },
+      d.installed.map((m) => {
+        const bench = aiState.bench[m.name];
+        const benchBtn = button(t('ai.bench'), null, async () => {
+          aiState.bench[m.name] = { running: true };
+          renderModels(d);
+          const res = await api('/api/ollama/bench', { model: m.name });
+          aiState.bench[m.name] = res.ok ? res.data : { error: true };
+          renderModels(aiState.info);
+        });
+        benchBtn.disabled = Boolean(bench?.running);
+        const del = button(t('ai.delete'), 'danger', async () => {
+          if (!(await confirmDialog(t('ai.deleteTitle', { model: m.name }), t('ai.deleteText'), t('ai.delete')))) return;
+          del.disabled = true;
+          await api('/api/ollama/delete', { model: m.name });
+          loadAi();
+        });
+        const info = [m.parameters, m.quantization, m.size ? fmtBytes(m.size) : null].filter(Boolean).join(' · ');
+        let benchText = null;
+        if (bench?.running) benchText = h('div', { class: 'muted small' }, t('ai.benchRunning'));
+        else if (bench?.error) benchText = errorBox(t('ai.benchFailed'));
+        else if (bench) {
+          benchText = h(
+            'div',
+            { class: 'bench' },
+            h('span', null, h('strong', null, num1.format(bench.generateRate ?? 0)), ` ${t('ai.tokPerSec')}`),
+            h('span', { class: 'muted small' }, t('ai.benchDetail', { prompt: num0.format(bench.promptRate ?? 0), load: num1.format((bench.loadMs ?? 0) / 1000) })),
+          );
+        }
+        return h(
+          'li',
+          null,
+          h('div', { class: 'model-main' }, h('div', null, h('strong', null, m.name), loaded.has(m.name) ? [' ', tag('ok', 'ok', t('oll.inMemory'))] : null, h('div', { class: 'muted small' }, info)), h('div', { class: 'model-actions' }, benchBtn, del)),
+          benchText,
+        );
+      }),
+    ),
+  );
+}
+
+async function loadAi() {
+  clearTimeout(aiTimer);
+  const res = await api('/api/ollama');
+  const d = res.ok ? res.data : null;
+  if (!d?.available) {
+    fill($('ai-root'), h('article', { class: 'card' }, errorBox(t('ai.unavailable'))));
+    aiBuilt = false;
+  } else {
+    if (!aiBuilt) buildAi();
+    aiState.info = d;
+    renderModels(d);
+    renderPull(d.pull);
+  }
+  const pulling = d?.pull && !d.pull.done;
+  if (currentRoute() === 'yapay-zeka') aiTimer = setTimeout(loadAi, pulling ? 1500 : 10_000);
+}
+
+function enterAi() {
+  loadAi();
+}
+
+function leaveAi() {
+  clearTimeout(aiTimer);
+}
+
+// ---------- Terminal ----------
+
+let terminalTimer = null;
+let terminalFrame = null;
+
+// Şifrelenmemiş bağlantı uyarısı: Tailscale (100.64.0.0/10) ve bu makine kendi içinde güvenli sayılır.
+function plainConnection() {
+  if (window.location.protocol === 'https:') return false;
+  const host = window.location.hostname;
+  if (host === 'localhost' || host === '127.0.0.1' || host === '[::1]') return false;
+  const m = /^100\.(\d+)\./.exec(host);
+  return !(m && Number(m[1]) >= 64 && Number(m[1]) <= 127);
+}
+
+async function loadTerminal() {
+  clearTimeout(terminalTimer);
+  const [term, settings] = await Promise.all([api('/api/terminal'), api('/api/settings')]);
+  const system = settings.ok ? settings.data.system : null;
+  const configured = system?.settings?.terminal ?? { enabled: false, user: '' };
+  const root = $('terminal-root');
+  if (term.data.available) {
+    if (!terminalFrame) {
+      terminalFrame = h('iframe', { class: 'term-frame', src: '/terminal', title: t('term.title') });
+    }
+    const disable = button(t('term.disable'), 'danger', async () => {
+      if (!(await confirmDialog(t('term.disableTitle'), t('term.disableText'), t('term.disable')))) return;
+      disable.disabled = true;
+      await api('/api/system', { terminal: { enabled: false, user: configured.user } });
+      terminalFrame?.remove();
+      terminalFrame = null;
+      terminalTimer = setTimeout(loadTerminal, 3000);
+    });
+    if (!root.contains(terminalFrame)) {
+      fill(
+        root,
+        h(
+          'article',
+          { class: 'card term-card' },
+          h('div', { class: 'card-head' }, h('h2', { class: 'card-title' }, icon('kernel'), h('span', null, t('term.title'))), h('span', { class: 'card-meta' }, configured.user ? t('term.user', { user: configured.user }) : '')),
+          plainConnection() ? h('p', { class: 'card-error' }, icon('warn'), h('span', null, t('term.plainWarning'))) : null,
+          terminalFrame,
+          h('div', { class: 'term-foot' }, h('span', { class: 'muted small' }, t('term.idleHint', { m: term.data.idleMinutes })), disable),
+        ),
+      );
+    }
+    return;
+  }
+  terminalFrame = null;
+  const users = system?.platform?.terminalUsers ?? [];
+  const supported = system?.platform?.terminal === true;
+  const waiting = configured.enabled;
+  const userSel = selectEl(users.map((u) => [u, u]), users.includes(configured.user) ? configured.user : users[0] ?? '');
+  const status = h('p', { class: 'muted small' });
+  const enable = button(t('term.enable'), 'accent', async () => {
+    enable.disabled = true;
+    status.textContent = t('term.enabling');
+    const res = await api('/api/system', { terminal: { enabled: true, user: userSel.value } });
+    if (!res.ok) {
+      enable.disabled = false;
+      status.textContent = t('term.enableFailed');
+      return;
+    }
+    terminalTimer = setTimeout(loadTerminal, 2000);
+  });
+  enable.disabled = !supported || !users.length;
+  fill(
+    root,
+    h(
+      'article',
+      { class: 'card term-setup' },
+      h('div', { class: 'card-head' }, h('h2', { class: 'card-title' }, icon('kernel'), h('span', null, t('term.title')))),
+      h('p', null, t('term.intro')),
+      !system ? errorBox(t('term.noHelper')) : !supported ? errorBox(t('term.unsupported')) : null,
+      h('div', { class: 'form-rows' }, formRow(t('term.userLabel'), userSel, t('term.userHint'))),
+      h('div', { class: 'form-actions' }, enable),
+      waiting ? h('p', { class: 'muted small' }, t('term.enabling')) : status,
+    ),
+  );
+  if (waiting && currentRoute() === 'terminal') terminalTimer = setTimeout(loadTerminal, 2000);
+}
+
+function enterTerminal() {
+  loadTerminal();
+}
+
+function leaveTerminal() {
+  clearTimeout(terminalTimer);
+}
+
 // ---------- Bölümler ve sol menü ----------
 
 const ROUTES = {
   genel: t('nav.overview'),
+  gecmis: t('nav.history'),
   'ekran-karti': t('nav.gpu'),
   depolama: t('nav.storage'),
   ag: t('nav.network'),
   donanim: t('nav.hardware'),
   surecler: t('nav.processes'),
   servisler: t('nav.services'),
+  terminal: t('nav.terminal'),
+  'yapay-zeka': t('nav.ai'),
   raporlar: t('nav.reports'),
   ayarlar: t('nav.settings'),
 };
@@ -2390,6 +2925,12 @@ function applyRoute() {
   else leaveReports();
   if (route === 'ekran-karti') loadOllama();
   else clearTimeout(ollamaTimer);
+  if (route === 'gecmis') enterHistory();
+  else leaveHistory();
+  if (route === 'yapay-zeka') enterAi();
+  else leaveAi();
+  if (route === 'terminal') enterTerminal();
+  else leaveTerminal();
   window.scrollTo(0, 0);
   // Gizliyken genişliği sıfır olan grafikler görünür olunca yeniden çizilir.
   requestAnimationFrame(redrawCharts);
