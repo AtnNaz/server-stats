@@ -4,7 +4,8 @@ import net from 'node:net';
 // Köprü komutu terminal kullanıcısıyla çalıştırır ve tek satır JSON sonuç döner.
 const MAX_REPLY = 256 * 1024;
 
-export function runCommand({ socketPath, command, timeoutSeconds = 30, connect = (p) => net.createConnection(p) }) {
+// sudoPassword verilirse köprü komutu "sudo -k -S" ile çalıştırır ve şifreyi yalnızca sudo'nun girişine yazar.
+export function runCommand({ socketPath, command, timeoutSeconds = 30, sudoPassword = null, connect = (p) => net.createConnection(p) }) {
   return new Promise((resolve, reject) => {
     const sock = connect(socketPath);
     const chunks = [];
@@ -13,7 +14,7 @@ export function runCommand({ socketPath, command, timeoutSeconds = 30, connect =
       sock.destroy();
       reject(Object.assign(new Error('timeout'), { code: 'timeout' }));
     }, (timeoutSeconds + 10) * 1000);
-    sock.on('connect', () => sock.write(`${JSON.stringify({ command, timeout: timeoutSeconds })}\n`));
+    sock.on('connect', () => sock.write(`${JSON.stringify({ command, timeout: timeoutSeconds, ...(sudoPassword !== null && { sudo_password: sudoPassword }) })}\n`));
     sock.on('data', (d) => {
       size += d.length;
       if (size > MAX_REPLY) return sock.destroy(new Error('too_large'));

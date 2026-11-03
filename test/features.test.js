@@ -306,3 +306,12 @@ test('komut köprüsü: istek tek satır JSON gider, sonuç okunur', async (t) =
   assert.deepEqual(await runCommand({ socketPath: sock, command: 'lsblk', timeoutSeconds: 5 }), { code: 0, output: 'çalıştı: lsblk (5)', truncated: false, timedOut: false });
   await assert.rejects(runCommand({ socketPath: path.join(path.dirname(sock), 'yok.sock'), command: 'ls' }));
 });
+
+test('sudo komutu: yalnızca tek parça "sudo komut" şifreyle çalışabilir', async () => {
+  const { sudoArgs } = await import('../src/command-policy.js');
+  assert.deepEqual(sudoArgs('sudo apt install -y fastfetch'), ['apt', 'install', '-y', 'fastfetch']);
+  assert.deepEqual(sudoArgs("sudo systemctl restart 'ollama'"), ['systemctl', 'restart', 'ollama']);
+  for (const bad of ['apt install x', 'sudo', 'sudo -s', 'sudo -u root id', 'sudo apt update && sudo apt upgrade', 'sudo cat x | tee y', 'sudo echo x > /etc/y', 'sudo $(id)', 'sudo ls; id']) {
+    assert.equal(sudoArgs(bad), null, bad);
+  }
+});

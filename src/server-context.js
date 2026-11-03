@@ -25,7 +25,8 @@ const TEXT = {
     ],
     noCommands: 'Komut çalıştıramazsın; gerekirse kullanıcıya hangi komutu çalıştırabileceğini söyle.',
     commands: (user, timeout) => [
-      `run_command aracıyla bu sunucuda komut çalıştırabilirsin. Komutlar "${user}" kullanıcısıyla, terminal olmadan ve en fazla ${timeout} saniye çalışır; sudo şifre soramadığı için root gerektiren komutlar çalışmaz.`,
+      `run_command aracıyla bu sunucuda komut çalıştırabilirsin. Komutlar "${user}" kullanıcısıyla, terminal olmadan çalışır; okuma komutları en fazla ${timeout} saniye sürebilir.`,
+      'Root gerektiren bir komutu tek başına "sudo komut ..." olarak yaz (zincirleme, boru, yönlendirme ve sudo seçenekleri olmadan); kullanıcı onaylarken sudo şifresini kendisi girer. Soru soran programlar için -y gibi onay seçeneklerini ekle. Başarısız olursa aynı işi başka bir yoldan zorlamaya çalışma, kullanıcıya hatayı açıkla.',
       'Yukarıdaki veri yetmediğinde önce yalnızca bilgi okuyan komutlarla (journalctl, systemctl status, lsblk, df, dmesg, nvidia-smi, ls, cat) araştır; bunlar hemen çalışır.',
       'Bir şeyi değiştiren komutları (dosya silme, servis yeniden başlatma, paket kurma) yalnızca kullanıcı açıkça isterse ya da sorunu çözmek için gerçekten gerekliyse öner ve nedenini reason alanına yaz; bu komutlar kullanıcı onaylamadan çalışmaz.',
       'journalctl ve benzeri komutlarda çıktıyı sınırla (ör. -n 50 --no-pager). Komut çıktısını okuduktan sonra kullanıcıya kısa ve net bir cevap ver.',
@@ -77,7 +78,8 @@ const TEXT = {
     ],
     noCommands: 'You cannot run commands; if useful, tell the user which command they could run.',
     commands: (user, timeout) => [
-      `You can run commands on this server with the run_command tool. They run as the user "${user}", without a terminal and for at most ${timeout} seconds; sudo cannot ask for a password, so commands that need root will fail.`,
+      `You can run commands on this server with the run_command tool. They run as the user "${user}", without a terminal; read-only commands may take at most ${timeout} seconds.`,
+      'Write a command that needs root as a single "sudo command ..." (no chaining, pipes, redirection or sudo options); the user types the sudo password when approving it. Add options such as -y for programs that ask questions. If it fails, do not try to force the same thing another way; explain the error to the user.',
       'When the data above is not enough, investigate first with read-only commands (journalctl, systemctl status, lsblk, df, dmesg, nvidia-smi, ls, cat); these run immediately.',
       'Only propose commands that change something (deleting files, restarting services, installing packages) if the user asks for it or it is really needed to fix the problem, and explain why in the reason field; these commands do not run until the user approves them.',
       'Limit output for journalctl and similar commands (e.g. -n 50 --no-pager). After reading the output, give the user a short, clear answer.',

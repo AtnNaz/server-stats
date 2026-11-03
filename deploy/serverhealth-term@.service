@@ -4,8 +4,7 @@ CollectMode=inactive-or-failed
 
 [Service]
 # Kullanıcı, root yardımcısının yazdığı serverhealth-term@.service.d/user.conf ile belirlenir.
-# Köprü root olarak kabuk açmayı reddeder.
-User=nobody
+# Ek dosya yoksa birim root olarak başlar ve köprü kabuk açmayı reddeder.
 ExecStart=/usr/bin/python3 /opt/serverhealth/bin/serverhealth-pty.py
 StandardInput=socket
 StandardOutput=socket

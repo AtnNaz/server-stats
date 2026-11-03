@@ -18,7 +18,7 @@ import { createSampler } from './sampler.js';
 import { createUpdateChecker, repoFromUrl } from './update-check.js';
 import { createHistoryStore, RANGES } from './history-store.js';
 import { createOllama, validateChat, RUN_COMMAND_TOOL } from './ollama.js';
-import { classifyCommand } from './command-policy.js';
+import { classifyCommand, sudoArgs } from './command-policy.js';
 import { runCommand } from './exec.js';
 import { buildServerContext } from './server-context.js';
 import { upgrade } from './websocket.js';
@@ -318,10 +318,26 @@ function main() {
     const cmd = classifyCommand(body.command);
     if (!cmd) return sendJson(req, res, 400, { code: 'invalid' });
     if (!cmd.readOnly && body.approved !== true) return sendJson(req, res, 403, { code: 'approval' });
+    // sudo şifresi yalnızca onaylanmış, tek parçalı bir "sudo ..." komutu için kabul edilir; günlüğe yazılmaz.
+    const password = body.sudoPassword;
+    if (password !== undefined) {
+      if (typeof password !== 'string' || !password || password.length > 256 || /[\r\n\0]/.test(password)) return sendJson(req, res, 400, { code: 'invalid' });
+      if (body.approved !== true || !sudoArgs(cmd.command)) return sendJson(req, res, 400, { code: 'sudo_form' });
+    }
     if (!(await terminalAvailable(config.terminal.execSocket))) return sendJson(req, res, 409, { code: 'exec_unavailable' });
-    console.log(`Yapay zekâ komutu (${cmd.readOnly ? 'otomatik' : 'onaylı'}, ${clientIp(req)}): ${cmd.command.slice(0, 300).replace(/\s+/g, ' ')}`);
+    console.log(`Yapay zekâ komutu (${cmd.readOnly ? 'otomatik' : password ? 'onaylı, sudo' : 'onaylı'}, ${clientIp(req)}): ${cmd.command.slice(0, 300).replace(/\s+/g, ' ')}`);
     try {
-      return sendJson(req, res, 200, await runCommand({ socketPath: config.terminal.execSocket, command: cmd.command, timeoutSeconds: config.terminal.commandTimeoutSeconds }));
+      return sendJson(
+        req,
+        res,
+        200,
+        await runCommand({
+          socketPath: config.terminal.execSocket,
+          command: cmd.command,
+          timeoutSeconds: cmd.readOnly ? config.terminal.commandTimeoutSeconds : config.terminal.approvedTimeoutSeconds,
+          sudoPassword: password ?? null,
+        }),
+      );
     } catch {
       return sendJson(req, res, 502, { code: 'exec_failed' });
     }

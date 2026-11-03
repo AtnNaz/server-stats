@@ -2578,6 +2578,34 @@ const CALL_STATE = {
   error: ['crit', 'crit', 'ai.execFailed'],
 };
 
+// Şifre istenen sudo komutu: tek parça "sudo komut ..." (panel de aynı kuralı uygular).
+const isSudoCommand = (command) => /^sudo\s+[^-\s]/.test(command) && !/[;&><`$(){}\\!*?[\]~|\n\r]/.test(command);
+
+function approvalEl(c) {
+  const run = button(t('ai.run'), 'accent', () => c.resolve?.({ approved: true, password: pass?.value ?? null }));
+  const reject = button(t('ai.reject'), null, () => c.resolve?.({ approved: false }));
+  let pass = null;
+  if (/^sudo\s/.test(c.command)) {
+    if (!isSudoCommand(c.command)) return h('div', null, errorBox(t('ai.sudoForm')), h('div', { class: 'chat-cmd-actions' }, reject));
+    // Yeniden çizimde yazılan şifre kaybolmasın diye alan komutla birlikte bellekte tutulur (kaydedilmez);
+    // düğmesi her çizimde yenilendiği için olaylar o anki "Çalıştır" düğmesine bağlanır.
+    c.passEl ??= h('input', { type: 'password', class: 'input', autocomplete: 'off', placeholder: t('ai.sudoPassword'), 'aria-label': t('ai.sudoPassword') });
+    pass = c.passEl;
+    pass.oninput = () => (run.disabled = !pass.value);
+    pass.onkeydown = (e) => {
+      if (e.key === 'Enter' && pass.value) run.click();
+    };
+    run.disabled = !pass.value;
+  }
+  return h(
+    'div',
+    { class: 'chat-cmd-approve' },
+    pass ? h('div', { class: 'muted small' }, t('ai.sudoHint')) : null,
+    pass && plainConnection() ? h('p', { class: 'card-error' }, icon('warn'), h('span', null, t('ai.sudoPlain'))) : null,
+    h('div', { class: 'chat-cmd-actions' }, pass, run, reject),
+  );
+}
+
 function callEl(c) {
   let state = CALL_STATE[c.state === 'pending' ? 'auto' : c.state];
   if (c.state === 'done') state = c.result.code === 0 ? ['ok', 'ok', 'ai.done'] : ['crit', 'crit', 'ai.failedCode'];
@@ -2590,9 +2618,8 @@ function callEl(c) {
     { class: 'chat-cmd' },
     h('div', { class: 'chat-cmd-head' }, h('code', null, c.command), state ? tag(state[0], state[1], t(state[2], { code: c.result?.code })) : null),
     c.reason ? h('div', { class: 'muted small' }, c.reason) : null,
-    c.state === 'approval'
-      ? h('div', { class: 'chat-cmd-actions' }, button(t('ai.run'), 'accent', () => c.resolve?.(true)), button(t('ai.reject'), null, () => c.resolve?.(false)))
-      : null,
+    c.state === 'approval' ? approvalEl(c) : null,
+    c.state === 'error' && c.error ? errorBox(t(EXEC_ERRORS[c.error] ?? 'ai.execFailed')) : null,
     out,
   );
 }
@@ -2617,6 +2644,7 @@ function renderChat() {
   ai.clear.disabled = Boolean(aiState.streaming) || !aiState.messages.length;
 }
 
+const EXEC_ERRORS = { sudo_form: 'ai.sudoForm', exec_unavailable: 'ai.errExecUnavailable' };
 const CHAT_ERRORS = { not_found: 'ai.errNotFound', no_tools: 'ai.errNoTools', exec_unavailable: 'ai.errExecUnavailable' };
 
 // Bir model yanıtını akış olarak okur. Hata ya da durdurma olursa false döner.
@@ -2665,27 +2693,33 @@ async function streamReply(reply, signal) {
 
 // Okuma komutları hemen çalışır; diğerleri "Çalıştır" ya da "Reddet" düğmesini bekler.
 async function runCall(c, signal) {
+  let password = null;
   if (!c.auto) {
     c.state = 'approval';
     renderChat();
-    const approved = await new Promise((resolve) => {
+    const decision = await new Promise((resolve) => {
       c.resolve = resolve;
-      signal.addEventListener('abort', () => resolve(false), { once: true });
+      signal.addEventListener('abort', () => resolve({ approved: false }), { once: true });
     });
     delete c.resolve;
-    if (!approved) {
+    delete c.passEl;
+    if (!decision.approved) {
       c.state = 'rejected';
       return;
     }
+    password = decision.password || null;
   }
   c.state = 'running';
   renderChat();
-  const res = await api('/api/ai/exec', { command: c.command, approved: !c.auto });
+  // Şifre yalnızca bu isteğe eklenir; sohbet kaydına, modele ya da tarayıcı depolamasına girmez.
+  const res = await api('/api/ai/exec', { command: c.command, approved: !c.auto, ...(password && { sudoPassword: password }) });
+  password = null;
   if (res.ok) {
     c.state = 'done';
     c.result = res.data;
   } else {
     c.state = 'error';
+    c.error = res.data.code;
   }
 }
 

@@ -121,6 +121,15 @@ export function classifyCommand(input) {
   return { command, readOnly: isReadOnly(command) };
 }
 
+// Şifreyle çalıştırılabilecek sudo komutu: tek bir "sudo komut ..." biçimi; boru, zincirleme, yönlendirme
+// ve sudo seçenekleri (-u, -s, -i…) olmadan. Şifre sudo'nun girişine verildiği için başka bir komut onu okuyamaz.
+export function sudoArgs(command) {
+  if (typeof command !== 'string' || UNSAFE_CHARS.test(command) || command.includes('|')) return null;
+  const parts = words(command.trim());
+  if (parts[0] !== 'sudo' || parts.length < 2 || parts[1].startsWith('-')) return null;
+  return parts.slice(1);
+}
+
 export function isReadOnly(command) {
   if (UNSAFE_CHARS.test(command)) return false;
   // Tekli boru (|) izinli: her parça ayrı ayrı denetlenir. "||" ve "|&" yukarıda ya da burada reddedilir.

@@ -31,7 +31,7 @@ const DEFAULTS = {
   // Uzun süreli ölçüm geçmişi panelin durum klasöründe dakikalık tutulur.
   history: { retentionDays: 30 },
   // Panel terminali: root yardımcısının açtığı systemd soketine bağlanır; boşta kalan oturum kapanır.
-  terminal: { socket: '/run/serverhealth-term.sock', execSocket: '/run/serverhealth-exec.sock', idleMinutes: 15, commandTimeoutSeconds: 30 },
+  terminal: { socket: '/run/serverhealth-term.sock', execSocket: '/run/serverhealth-exec.sock', idleMinutes: 15, commandTimeoutSeconds: 30, approvedTimeoutSeconds: 300 },
 };
 
 export function resolveConfigPath(argv = process.argv.slice(2), env = process.env) {
@@ -76,6 +76,7 @@ function validate(cfg) {
   if (!isInt(cfg.terminal.idleMinutes, 1, 1440)) errors.push('terminal.idleMinutes 1-1440 arasında olmalı');
   if (typeof cfg.terminal.execSocket !== 'string' || !path.isAbsolute(cfg.terminal.execSocket)) errors.push('terminal.execSocket mutlak bir yol olmalı');
   if (!isInt(cfg.terminal.commandTimeoutSeconds, 1, 120)) errors.push('terminal.commandTimeoutSeconds 1-120 arasında olmalı');
+  if (!isInt(cfg.terminal.approvedTimeoutSeconds, 1, 600)) errors.push('terminal.approvedTimeoutSeconds 1-600 arasında olmalı');
   if (typeof cfg.updateCheck !== 'boolean') errors.push('updateCheck true ya da false olmalı');
   if (!Array.isArray(cfg.allowedHosts) || cfg.allowedHosts.some((s) => typeof s !== 'string' || !s))
     errors.push('allowedHosts bir ana makine adı listesi olmalı (ör. ["panel.example.com"])');

@@ -210,6 +210,10 @@ test('yapay zekâ komutu: oturum, onay ve hizmet denetimi', async (t) => {
   // Değiştiren komut onaysız reddedilir; okuma komutu onaysız geçer ama hizmet kapalı.
   assert.equal((await (await post(base, '/api/ai/exec', { command: 'rm -rf /tmp/x' }, cookie)).json()).code, 'approval');
   assert.equal((await (await post(base, '/api/ai/exec', { command: 'lsblk' }, cookie)).json()).code, 'exec_unavailable');
+  // Şifre yalnızca onaylı, tek parça bir sudo komutuyla kabul edilir.
+  assert.equal((await (await post(base, '/api/ai/exec', { command: 'sudo apt update && sudo apt upgrade', approved: true, sudoPassword: 'x' }, cookie)).json()).code, 'sudo_form');
+  assert.equal((await (await post(base, '/api/ai/exec', { command: 'sudo apt install -y x', sudoPassword: 'x' }, cookie)).json()).code, 'approval');
+  assert.equal((await (await post(base, '/api/ai/exec', { command: 'sudo apt install -y x', approved: true, sudoPassword: 'a\nb' }, cookie)).json()).code, 'invalid');
   assert.equal((await (await post(base, '/api/ollama/chat', { model: 'a', tools: true, messages: [{ role: 'user', content: 'x' }] }, cookie)).json()).code, 'exec_unavailable');
   const term = await (await fetch(`${base}/api/terminal`, { headers: { Cookie: cookie } })).json();
   assert.deepEqual([term.available, term.execAvailable], [false, false]);

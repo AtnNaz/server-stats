@@ -2,14 +2,16 @@
 """Node Stats yapay zekâ komutları: systemd soketinden gelen tek bir komutu çalıştırıp çıktısını döner.
 
 serverhealth-exec@.service tarafından, terminal için seçilen kullanıcıyla çalıştırılır; soket stdin/stdout'tur.
-Gelen: tek satır JSON {"command": "...", "timeout": 30}. Giden: tek satır JSON
-{"code": 0, "output": "...", "truncated": false, "timedOut": false}.
-Komut terminal olmadan çalışır; sudo şifre soramadığı için root yetkisi alınamaz.
+Gelen: tek satır JSON {"command": "...", "timeout": 30, "sudo_password": "..."(isteğe bağlı)}.
+Giden: tek satır JSON {"code": 0, "output": "...", "truncated": false, "timedOut": false}.
+Komut terminal olmadan çalışır. Şifre verilirse komut tek bir "sudo ..." olmalıdır; "sudo -k -S" ile
+çalıştırılır ve şifre yalnızca sudo'nun girişine yazılır (kayda ya da çıktıya geçmez).
 """
 import json
 import os
 import pwd
 import select
+import shlex
 import signal
 import subprocess
 import sys
@@ -17,7 +19,9 @@ import time
 
 MAX_REQUEST = 16 * 1024
 MAX_OUTPUT = 64 * 1024
-MAX_TIMEOUT = 120
+MAX_TIMEOUT = 600
+# Kabuğun yorumlayacağı karakterler: şifreli sudo komutunda hiçbiri olmamalı (panel de denetler).
+UNSAFE = set(';&><`$(){}\\\n\r!*?[]~|')
 
 
 def env_for(user):
@@ -62,20 +66,37 @@ def main():
         if not isinstance(command, str) or not command.strip() or len(command) > 2000 or '\0' in command:
             raise ValueError('command')
         timeout = min(max(int(req.get('timeout', 30)), 1), MAX_TIMEOUT)
+        password = req.get('sudo_password')
+        argv = ['/bin/bash', '-c', command]
+        if password is not None:
+            if not isinstance(password, str) or not password or any(c in password for c in '\r\n\0'):
+                raise ValueError('password')
+            parts = shlex.split(command)
+            if any(c in UNSAFE for c in command) or len(parts) < 2 or parts[0] != 'sudo' or parts[1].startswith('-'):
+                raise ValueError('sudo_form')
+            argv = ['sudo', '-k', '-S', '-p', '', '--'] + parts[1:]
     except Exception:
         reply({'error': 'bad_request'})
         return
 
     user = pwd.getpwuid(os.getuid())
     proc = subprocess.Popen(
-        ['/bin/bash', '-c', command],
-        stdin=subprocess.DEVNULL,
+        argv,
+        stdin=subprocess.PIPE if password is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         cwd=user.pw_dir if os.path.isdir(user.pw_dir) else '/',
         env=env_for(user),
         start_new_session=True,
     )
+    if password is not None:
+        # Şifre bir kez yazılıp giriş kapatılır; sudo -k önbelleği kullanmadığı için onu mutlaka kendisi okur.
+        try:
+            proc.stdin.write((password + '\n').encode('utf-8'))
+            proc.stdin.close()
+        except BrokenPipeError:
+            pass
+        password = None
     output = b''
     truncated = False
     timed_out = False
