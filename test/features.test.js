@@ -307,11 +307,12 @@ test('komut köprüsü: istek tek satır JSON gider, sonuç okunur', async (t) =
   await assert.rejects(runCommand({ socketPath: path.join(path.dirname(sock), 'yok.sock'), command: 'ls' }));
 });
 
-test('sudo komutu: yalnızca tek parça "sudo komut" şifreyle çalışabilir', async () => {
-  const { sudoArgs } = await import('../src/command-policy.js');
-  assert.deepEqual(sudoArgs('sudo apt install -y fastfetch'), ['apt', 'install', '-y', 'fastfetch']);
-  assert.deepEqual(sudoArgs("sudo systemctl restart 'ollama'"), ['systemctl', 'restart', 'ollama']);
-  for (const bad of ['apt install x', 'sudo', 'sudo -s', 'sudo -u root id', 'sudo apt update && sudo apt upgrade', 'sudo cat x | tee y', 'sudo echo x > /etc/y', 'sudo $(id)', 'sudo ls; id']) {
-    assert.equal(sudoArgs(bad), null, bad);
+test('root komutu: "&&" ile bağlı basit adımlar şifreyle çalışabilir', async () => {
+  const { rootSteps } = await import('../src/command-policy.js');
+  assert.deepEqual(rootSteps('sudo apt install -y fastfetch'), [['apt', 'install', '-y', 'fastfetch']]);
+  assert.deepEqual(rootSteps('apt update && apt install -y neofetch'), [['apt', 'update'], ['apt', 'install', '-y', 'neofetch']]);
+  assert.deepEqual(rootSteps("sudo systemctl restart 'ollama'"), [['systemctl', 'restart', 'ollama']]);
+  for (const bad of ['sudo', 'sudo -s', 'sudo -u root id', 'sudo cat x | tee y', 'sudo echo x > /etc/y', 'sudo $(id)', 'sudo ls; id', 'a && b && c && d && e', 'apt update &&', 'A=1 apt update', 'ls & id']) {
+    assert.equal(rootSteps(bad), null, bad);
   }
 });

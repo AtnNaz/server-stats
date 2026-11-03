@@ -18,7 +18,7 @@ import { createSampler } from './sampler.js';
 import { createUpdateChecker, repoFromUrl } from './update-check.js';
 import { createHistoryStore, RANGES } from './history-store.js';
 import { createOllama, validateChat, RUN_COMMAND_TOOL } from './ollama.js';
-import { classifyCommand, sudoArgs } from './command-policy.js';
+import { classifyCommand, rootSteps } from './command-policy.js';
 import { runCommand } from './exec.js';
 import { buildServerContext } from './server-context.js';
 import { upgrade } from './websocket.js';
@@ -318,26 +318,30 @@ function main() {
     const cmd = classifyCommand(body.command);
     if (!cmd) return sendJson(req, res, 400, { code: 'invalid' });
     if (!cmd.readOnly && body.approved !== true) return sendJson(req, res, 403, { code: 'approval' });
-    // sudo şifresi yalnızca onaylanmış, tek parçalı bir "sudo ..." komutu için kabul edilir; günlüğe yazılmaz.
+    // sudo şifresi yalnızca onaylanmış ve basit adımlardan oluşan bir komut için kabul edilir; günlüğe yazılmaz.
     const password = body.sudoPassword;
+    let steps = null;
     if (password !== undefined) {
       if (typeof password !== 'string' || !password || password.length > 256 || /[\r\n\0]/.test(password)) return sendJson(req, res, 400, { code: 'invalid' });
-      if (body.approved !== true || !sudoArgs(cmd.command)) return sendJson(req, res, 400, { code: 'sudo_form' });
+      steps = rootSteps(cmd.command);
+      if (body.approved !== true || !steps) return sendJson(req, res, 400, { code: 'sudo_form' });
     }
     if (!(await terminalAvailable(config.terminal.execSocket))) return sendJson(req, res, 409, { code: 'exec_unavailable' });
     console.log(`Yapay zekâ komutu (${cmd.readOnly ? 'otomatik' : password ? 'onaylı, sudo' : 'onaylı'}, ${clientIp(req)}): ${cmd.command.slice(0, 300).replace(/\s+/g, ' ')}`);
     try {
-      return sendJson(
-        req,
-        res,
-        200,
-        await runCommand({
-          socketPath: config.terminal.execSocket,
-          command: cmd.command,
-          timeoutSeconds: cmd.readOnly ? config.terminal.commandTimeoutSeconds : config.terminal.approvedTimeoutSeconds,
-          sudoPassword: password ?? null,
-        }),
-      );
+      const run = (command, sudoPassword = null) =>
+        runCommand({ socketPath: config.terminal.execSocket, command, timeoutSeconds: cmd.readOnly ? config.terminal.commandTimeoutSeconds : config.terminal.approvedTimeoutSeconds, sudoPassword });
+      if (!steps) return sendJson(req, res, 200, await run(cmd.command));
+      // Root adımları sırayla çalışır; biri başarısız olursa sonrakiler çalışmaz ("&&" gibi).
+      const result = { code: 0, output: '', truncated: false, timedOut: false };
+      for (const step of steps) {
+        const line = `sudo ${step.map((w) => (/^[\w./:=@+,-]+$/.test(w) ? w : `'${w}'`)).join(' ')}`;
+        const r = await run(line, password);
+        result.output += `${steps.length > 1 ? `$ ${line}\n` : ''}${r.output}`;
+        Object.assign(result, { code: r.code, truncated: result.truncated || r.truncated, timedOut: result.timedOut || r.timedOut });
+        if (r.code !== 0) break;
+      }
+      return sendJson(req, res, 200, result);
     } catch {
       return sendJson(req, res, 502, { code: 'exec_failed' });
     }

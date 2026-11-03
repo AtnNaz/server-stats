@@ -121,13 +121,23 @@ export function classifyCommand(input) {
   return { command, readOnly: isReadOnly(command) };
 }
 
-// Şifreyle çalıştırılabilecek sudo komutu: tek bir "sudo komut ..." biçimi; boru, zincirleme, yönlendirme
-// ve sudo seçenekleri (-u, -s, -i…) olmadan. Şifre sudo'nun girişine verildiği için başka bir komut onu okuyamaz.
-export function sudoArgs(command) {
-  if (typeof command !== 'string' || UNSAFE_CHARS.test(command) || command.includes('|')) return null;
-  const parts = words(command.trim());
-  if (parts[0] !== 'sudo' || parts.length < 2 || parts[1].startsWith('-')) return null;
-  return parts.slice(1);
+// Root olarak (şifreyle) çalıştırılabilecek komut: "&&" ile bağlı en fazla 4 basit adım; her adımın başındaki
+// "sudo" isteğe bağlıdır. Boru, yönlendirme, alt kabuk ve sudo seçenekleri (-u, -s, -i…) olamaz.
+// Her adım ayrı bir "sudo -k -S" ile çalışır ve şifre yalnızca sudo'nun girişine verilir.
+const MAX_ROOT_STEPS = 4;
+export function rootSteps(command) {
+  if (typeof command !== 'string') return null;
+  const segments = command.trim().split('&&').map((s) => s.trim());
+  if (!segments.length || segments.length > MAX_ROOT_STEPS) return null;
+  const steps = [];
+  for (const segment of segments) {
+    if (!segment || UNSAFE_CHARS.test(segment) || segment.includes('|')) return null;
+    let parts = words(segment);
+    if (parts[0] === 'sudo') parts = parts.slice(1);
+    if (!parts.length || parts[0].startsWith('-') || parts[0].includes('=')) return null;
+    steps.push(parts);
+  }
+  return steps;
 }
 
 export function isReadOnly(command) {

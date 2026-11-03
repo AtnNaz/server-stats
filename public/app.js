@@ -2578,17 +2578,29 @@ const CALL_STATE = {
   error: ['crit', 'crit', 'ai.execFailed'],
 };
 
-// Şifre istenen sudo komutu: tek parça "sudo komut ..." (panel de aynı kuralı uygular).
-const isSudoCommand = (command) => /^sudo\s+[^-\s]/.test(command) && !/[;&><`$(){}\\!*?[\]~|\n\r]/.test(command);
+// Root olarak çalıştırılabilecek komut: "&&" ile bağlı en fazla 4 basit adım (panel aynı kuralı uygular).
+const canRunAsRoot = (command) => {
+  const steps = command.split('&&').map((s) => s.trim());
+  return steps.length <= 4 && steps.every((s) => s && !/[;&><`$(){}\\!*?[\]~|\n\r]/.test(s) && /^(sudo\s+)?[^-\s=]/.test(s) && !/^sudo\s*$/.test(s));
+};
+// Genelde root isteyen komutlar: "sudo ile çalıştır" bunlarda kendiliğinden işaretli gelir.
+const ROOT_HINT = /(^|&&)\s*(sudo\s|apt(-get)?\s+(install|remove|purge|update|upgrade|full-upgrade|autoremove|dist-upgrade)\b|dpkg\s+-(i|r|P)\b|snap\s+(install|remove|refresh)\b|systemctl\s+(start|stop|restart|reload|enable|disable|mask|unmask|daemon-reload)\b|service\s|(u?mount|reboot|shutdown|poweroff|useradd|usermod|userdel|ufw|modprobe|update-grub|update-initramfs)\b)/;
 
 function approvalEl(c) {
-  const run = button(t('ai.run'), 'accent', () => c.resolve?.({ approved: true, password: pass?.value ?? null }));
+  const run = button(t('ai.run'), 'accent', () => c.resolve?.({ approved: true, password: c.asRoot ? (c.passEl?.value ?? null) : null }));
   const reject = button(t('ai.reject'), null, () => c.resolve?.({ approved: false }));
+  const rootable = canRunAsRoot(c.command);
+  c.asRoot ??= rootable && ROOT_HINT.test(c.command);
+  const root = switchEl(c.asRoot, t('ai.asRoot'));
+  root.input.disabled = !rootable;
+  root.input.addEventListener('change', () => {
+    c.asRoot = root.input.checked;
+    renderChat();
+  });
+  // Yeniden çizimde yazılan şifre kaybolmasın diye alan komutla birlikte bellekte tutulur (kaydedilmez);
+  // düğmesi her çizimde yenilendiği için olaylar o anki "Çalıştır" düğmesine bağlanır.
   let pass = null;
-  if (/^sudo\s/.test(c.command)) {
-    if (!isSudoCommand(c.command)) return h('div', null, errorBox(t('ai.sudoForm')), h('div', { class: 'chat-cmd-actions' }, reject));
-    // Yeniden çizimde yazılan şifre kaybolmasın diye alan komutla birlikte bellekte tutulur (kaydedilmez);
-    // düğmesi her çizimde yenilendiği için olaylar o anki "Çalıştır" düğmesine bağlanır.
+  if (c.asRoot) {
     c.passEl ??= h('input', { type: 'password', class: 'input', autocomplete: 'off', placeholder: t('ai.sudoPassword'), 'aria-label': t('ai.sudoPassword') });
     pass = c.passEl;
     pass.oninput = () => (run.disabled = !pass.value);
@@ -2597,11 +2609,14 @@ function approvalEl(c) {
     };
     run.disabled = !pass.value;
   }
+  const needsRootButCant = !rootable && ROOT_HINT.test(c.command);
   return h(
     'div',
     { class: 'chat-cmd-approve' },
+    rootable ? root.el : null,
     pass ? h('div', { class: 'muted small' }, t('ai.sudoHint')) : null,
     pass && plainConnection() ? h('p', { class: 'card-error' }, icon('warn'), h('span', null, t('ai.sudoPlain'))) : null,
+    needsRootButCant ? errorBox(t('ai.sudoForm')) : null,
     h('div', { class: 'chat-cmd-actions' }, pass, run, reject),
   );
 }
