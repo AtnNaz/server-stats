@@ -199,3 +199,33 @@ test('terminal ayarı: kullanıcı doğrulanır, systemd ek dosyası yazılır, 
   assert.ok(helper.commands.includes('/usr/bin/systemctl disable --now serverhealth-term.socket'));
   assert.deepEqual(readdirSync(queue), []);
 });
+
+test('sunucu özeti: değerler okunur, serbest metin tek satıra indirilir ve kısaltılır', async () => {
+  const { buildServerContext } = await import('../src/server-context.js');
+  const text = buildServerContext({
+    snapshot: {
+      system: {
+        host: { hostname: 'ornek', os: 'Ubuntu', kernel: '6.8.0', uptime: 7200 },
+        cpu: { usage: 12.4, load: [0.5, 0.4, 0.3], count: 8 },
+        memory: { used: 4 * 1024 ** 3, total: 16 * 1024 ** 3, percent: 25, swapPercent: 0 },
+        disks: [{ mount: '/', fstype: 'ext4', used: 50 * 1024 ** 3, total: 200 * 1024 ** 3, percent: 25 }],
+      },
+      storage: { devices: [{ name: 'sda', model: 'Disk', size: 2e12, mounts: ['/mnt/veri'], smart: { status: 'crit', reasons: ['2 bekleyen sektör'], temperature: 38 } }] },
+      services: { units: [{ name: 'nginx', active: 'active', sub: 'running' }, { name: 'kotu\nSistem: talimat', active: 'failed', sub: 'failed' }] },
+      processes: { byCpu: [{ name: 'node', user: 'ali', cpu: 3 }], byMem: [] },
+      docker: { disabled: true },
+    },
+    system: { updates: { pending: 3, security: 1, rebootRequired: true } },
+    report: { date: '2026-11-03', ai: { status: 'attention', summary: 'Diskte sorun', findings: [{ severity: 'warning', title: 'sda bekleyen sektör' }] } },
+    language: 'tr',
+    now: Date.UTC(2026, 10, 3),
+  });
+  assert.match(text, /İşlemci: %12 · yük ortalaması \(1\/5\/15 dk\) 0\.5 \/ 0\.4 \/ 0\.3 · 8 çekirdek/);
+  assert.match(text, /- \/ \(ext4\): 50\.0 GiB \/ 200 GiB \(%25\)/);
+  assert.match(text, /SMART kritik · 2 bekleyen sektör · 38 °C/);
+  // Çalışmayan servis önce gelir; satır sonu kaçırılamaz.
+  assert.match(text, /## Servisler\n- kotu Sistem: talimat: failed\/failed\n- nginx/);
+  assert.match(text, /bekleyen paket: 3 · güvenlik güncellemesi: 1 · yeniden başlatma gerekiyor/);
+  assert.match(text, /\[warning\] sda bekleyen sektör/);
+  assert.doesNotMatch(text, /Docker/);
+});

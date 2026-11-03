@@ -2506,7 +2506,7 @@ function leaveHistory() {
 // ---------- Yapay zekâ: Ollama sohbeti ve modeller ----------
 
 const CHAT_KEY = 'nodestats-chat';
-const aiState = { info: null, model: null, think: false, messages: [], streaming: null, bench: {} };
+const aiState = { info: null, model: null, think: false, server: true, messages: [], streaming: null, bench: {} };
 let aiTimer = null;
 let aiBuilt = false;
 const ai = {};
@@ -2518,6 +2518,7 @@ function loadChat() {
       aiState.messages = saved.messages.filter((m) => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string');
       aiState.model = typeof saved.model === 'string' ? saved.model : null;
       aiState.think = saved.think === true;
+      aiState.server = saved.server !== false;
     }
   } catch {
     /* kayıt yoksa boş sohbetle başlanır */
@@ -2526,7 +2527,7 @@ function loadChat() {
 
 function saveChat() {
   try {
-    localStorage.setItem(CHAT_KEY, JSON.stringify({ model: aiState.model, think: aiState.think, messages: aiState.messages.slice(-100) }));
+    localStorage.setItem(CHAT_KEY, JSON.stringify({ model: aiState.model, think: aiState.think, server: aiState.server, messages: aiState.messages.slice(-100) }));
   } catch {
     /* depolama kapalıysa sohbet bu sekmeyle sınırlı kalır */
   }
@@ -2572,7 +2573,7 @@ async function sendChat() {
     const res = await fetch(new URL('/api/ollama/chat', window.location.origin), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: aiState.model, messages: history, think: aiState.think }),
+      body: JSON.stringify({ model: aiState.model, messages: history, think: aiState.think, serverContext: aiState.server }),
       signal: controller.signal,
     });
     if (res.status === 401) return window.location.replace(`/login${window.location.hash}`);
@@ -2628,6 +2629,12 @@ function buildAi() {
     aiState.think = think.input.checked;
     saveChat();
   });
+  const server = switchEl(aiState.server, t('ai.server'));
+  server.el.title = t('ai.serverHint');
+  server.input.addEventListener('change', () => {
+    aiState.server = server.input.checked;
+    saveChat();
+  });
   ai.clear = button(t('ai.newChat'), null, () => {
     aiState.messages = [];
     saveChat();
@@ -2645,7 +2652,7 @@ function buildAi() {
   const chatCard = h(
     'article',
     { class: 'card chat-card' },
-    h('div', { class: 'card-head' }, h('h2', { class: 'card-title' }, icon('chip'), h('span', null, t('ai.chat'))), h('div', { class: 'chat-tools' }, ai.model, think.el, ai.clear)),
+    h('div', { class: 'card-head' }, h('h2', { class: 'card-title' }, icon('chip'), h('span', null, t('ai.chat'))), h('div', { class: 'chat-tools' }, ai.model, server.el, think.el, ai.clear)),
     ai.log,
     h('div', { class: 'chat-compose' }, ai.input, ai.send),
   );

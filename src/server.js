@@ -18,6 +18,7 @@ import { createSampler } from './sampler.js';
 import { createUpdateChecker, repoFromUrl } from './update-check.js';
 import { createHistoryStore, RANGES } from './history-store.js';
 import { createOllama, validateChat } from './ollama.js';
+import { buildServerContext } from './server-context.js';
 import { upgrade } from './websocket.js';
 import { createTerminals, terminalAvailable } from './terminal.js';
 
@@ -221,6 +222,16 @@ function main() {
 
   const ollama = createOllama({ url: config.ollama.url });
 
+  async function latestReport() {
+    const [last] = await listReports();
+    if (!last) return null;
+    try {
+      return JSON.parse(await readFile(path.join(config.reports.dir, `${last.date}.json`), 'utf8'));
+    } catch {
+      return null;
+    }
+  }
+
   // Bellekteki bir modeli boşaltır (Ollama: keep_alive 0). Yalnızca o an yüklü bir model kabul edilir.
   async function handleOllamaUnload(req, res) {
     const body = await readJsonBody(req, res);
@@ -266,6 +277,12 @@ function main() {
     if (!body) return;
     const chat = validateChat(body);
     if (!chat) return sendJson(req, res, 400, { code: 'invalid' });
+    // "Sunucu bilgisi" açıkken panelin anlık özeti sohbetin başına sistem mesajı olarak eklenir.
+    if (chat.serverContext) {
+      const context = buildServerContext({ snapshot: sampler.current().snapshot, system: await readSystemStatus(), report: await latestReport(), language: effective.language });
+      chat.messages = [{ role: 'system', content: context }, ...chat.messages];
+      chat.numCtx = 8192;
+    }
     const controller = new AbortController();
     res.on('close', () => controller.abort());
     let started = false;

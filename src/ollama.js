@@ -20,7 +20,7 @@ export function validateChat(body) {
     messages.push({ role: m.role, content: m.content });
   }
   if (messages.at(-1).role !== 'user') return null;
-  return { model: body.model, messages, think: body.think === true };
+  return { model: body.model, messages, think: body.think === true, serverContext: body.serverContext === true };
 }
 
 // Ollama'nın satır satır JSON akışını okur.
@@ -184,8 +184,8 @@ export function createOllama({ url, fetchImpl = fetch }) {
   }
 
   // Sohbet yanıtını parça parça aktarır. write() her parça için çağrılır; signal iptal edince akış durur.
-  async function chat({ model, messages, think }, { signal, write }) {
-    const body = { model, messages, stream: true, keep_alive: '10m', think };
+  async function chat({ model, messages, think, numCtx }, { signal, write }) {
+    const body = { model, messages, stream: true, keep_alive: '10m', think, ...(numCtx && { options: { num_ctx: numCtx } }) };
     let r = await call('/api/chat', { method: 'POST', body: JSON.stringify(body), signal });
     if (r.status === 400 && !think) {
       delete body.think;
