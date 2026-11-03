@@ -17,6 +17,7 @@ import {
   aptConfig,
   parseAptConfigDump,
   countAptUpgrades,
+  parseAptUpgrades,
   onCalendarWeekly,
   onCalendarMonthly,
   TERM_USER,
@@ -340,7 +341,7 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
     if (platform.packageManager === 'apt') {
       if (refresh) await run('apt-get', ['update'], { timeout: 15 * 60_000, env: { DEBIAN_FRONTEND: 'noninteractive' } });
       const sim = await run('apt-get', ['-s', '-o', 'Debug::NoLocking=1', 'upgrade']);
-      if (!dryRun) Object.assign(result, countAptUpgrades(sim.stdout));
+      if (!dryRun) Object.assign(result, countAptUpgrades(sim.stdout), { packages: parseAptUpgrades(sim.stdout).slice(0, 400) });
       try {
         await access(P('/run/reboot-required'));
         result.rebootRequired = true;

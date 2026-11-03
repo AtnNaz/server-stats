@@ -22,6 +22,8 @@ import { classifyCommand, rootSteps } from './command-policy.js';
 import { runCommand } from './exec.js';
 import { buildServerContext } from './server-context.js';
 import { createChatStore } from './chat-store.js';
+import { updateSummaryMessages } from './update-summary.js';
+import { createSpeedtest } from './speedtest.js';
 import { upgrade } from './websocket.js';
 import { createTerminals, terminalAvailable } from './terminal.js';
 
@@ -227,6 +229,48 @@ function main() {
 
   const ollama = createOllama({ url: config.ollama.url });
   const chats = createChatStore({ dir: path.join(stateDir, 'chats') });
+  const speedtest = createSpeedtest({ dir: stateDir });
+
+  // Zamanlanmış hız testi: Ayarlar'da seçilen aralıkla; son testten bu yana süre dolduysa başlar.
+  const speedtestTimer = setInterval(async () => {
+    const hours = effective.speedtestHours;
+    if (!hours || speedtest.running) return;
+    if (Date.now() - (await speedtest.lastTime()) >= hours * 3600_000) speedtest.start('scheduled');
+  }, 60_000);
+  speedtestTimer.unref();
+
+  async function handleSpeedtest(req, res) {
+    const body = await readJsonBody(req, res);
+    if (!body) return;
+    if (!speedtest.start('manual')) return sendJson(req, res, 409, { code: 'busy' });
+    console.log(`Hız testi istendi (${clientIp(req)})`);
+    return sendJson(req, res, 202, { started: true });
+  }
+
+  // Bekleyen güncellemelerin yapay zekâ özeti; aynı paket listesi için sonuç bellekte tutulur.
+  let updateSummary = null;
+  async function handleUpdateSummary(req, res) {
+    const body = await readJsonBody(req, res);
+    if (!body) return;
+    const system = await readSystemStatus();
+    const packages = system.updates?.packages ?? [];
+    if (!packages.length) return sendJson(req, res, 409, { code: 'no_updates' });
+    const key = JSON.stringify(packages.map((p) => [p.name, p.to]));
+    if (updateSummary?.key === key && updateSummary.language === effective.language) return sendJson(req, res, 200, updateSummary.result);
+    const { models: installed } = await ollama.models();
+    const names = installed.map((m) => m.name);
+    const preferred = system.settings?.report?.model;
+    const model = names.includes(preferred) ? preferred : names[0];
+    if (!model) return sendJson(req, res, 409, { code: 'no_model' });
+    try {
+      const summary = await ollama.complete({ model, messages: updateSummaryMessages(packages, effective.language) });
+      const result = { summary, model, count: packages.length, createdAt: Date.now() };
+      updateSummary = { key, language: effective.language, result };
+      return sendJson(req, res, 200, result);
+    } catch {
+      return sendJson(req, res, 502, { code: 'ollama' });
+    }
+  }
 
   async function handleChatSave(req, res) {
     const body = await readJsonBody(req, res, MAX_SAVE_BODY);
@@ -485,6 +529,8 @@ function main() {
       if (pathname === '/api/ollama/chat') return handleOllamaChat(req, res);
       if (pathname === '/api/ai/exec') return handleAiExec(req, res);
       if (pathname === '/api/chats/save') return handleChatSave(req, res);
+      if (pathname === '/api/updates/summary') return handleUpdateSummary(req, res);
+      if (pathname === '/api/speedtest') return handleSpeedtest(req, res);
       if (pathname === '/api/chats/delete') return handleChatDelete(req, res);
       return send(req, res, 405, TEXT, 'Method not allowed\n', { Allow: 'GET, HEAD' });
     }
@@ -537,6 +583,7 @@ function main() {
     if (pathname === '/api/ollama/models') return sendJson(req, res, 200, await ollama.models());
     if (pathname === '/api/ollama') return sendJson(req, res, 200, await ollama.info());
     if (pathname === '/api/chats') return sendJson(req, res, 200, { chats: await chats.list() });
+    if (pathname === '/api/speedtest') return sendJson(req, res, 200, { ...(await speedtest.status()), scheduleHours: effective.speedtestHours });
     const chatMatch = /^\/api\/chats\/([0-9a-f-]{36})$/.exec(pathname);
     if (chatMatch) {
       const chat = await chats.get(chatMatch[1]);

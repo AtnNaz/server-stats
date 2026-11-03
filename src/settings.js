@@ -10,6 +10,8 @@ import { parseHash } from './auth.js';
 export const LANGUAGES = ['tr', 'en'];
 export const INTERVALS = [1, 2, 3, 5, 10, 15, 30, 60];
 export const HISTORY_MINUTES = [5, 10, 15, 30, 60, 120];
+// Zamanlanmış hız testi aralığı (saat); 0 kapalı.
+export const SPEEDTEST_HOURS = [0, 1, 3, 6, 12, 24];
 export const DEFAULT_THRESHOLDS = { disk: [85, 95], memory: [85, 95], cpu: [80, 95], temperature: [80, 90] };
 
 const isPair = (v, max) => Array.isArray(v) && v.length === 2 && v.every((n) => Number.isInteger(n) && n >= 1 && n <= max) && v[0] < v[1];
@@ -51,6 +53,10 @@ export function validatePanelSettings(input) {
       case 'services':
         if (Array.isArray(v) && v.length <= 100 && v.every((s) => typeof s === 'string' && UNIT_NAME.test(s) && s.length <= 128)) value.services = [...new Set(v)];
         else errors.push('services');
+        break;
+      case 'speedtestHours':
+        if (SPEEDTEST_HOURS.includes(v)) value.speedtestHours = v;
+        else errors.push('speedtestHours');
         break;
       case 'hideDisks':
       case 'hideInterfaces':
@@ -106,6 +112,7 @@ export function effectiveConfig(config, settings) {
     intervalSeconds: settings.intervalSeconds ?? config.intervalSeconds,
     historyMinutes: settings.historyMinutes ?? config.historyMinutes,
     services: settings.services ?? config.services,
+    speedtestHours: settings.speedtestHours ?? 0,
     thresholds: { ...DEFAULT_THRESHOLDS, ...settings.thresholds },
     auth: { ...config.auth, ...(settings.passwordHash && settings.passwordBase === config.auth.passwordHash && { passwordHash: settings.passwordHash }) },
     disks: { ...config.disks, ...(settings.hideDisks && { hide: settings.hideDisks }) },
@@ -121,6 +128,7 @@ export function publicSettings(effective) {
     historyMinutes: effective.historyMinutes,
     thresholds: effective.thresholds,
     services: effective.services,
+    speedtestHours: effective.speedtestHours,
     hideDisks: effective.disks.hide,
     hideInterfaces: effective.network.hideInterfaces,
   };

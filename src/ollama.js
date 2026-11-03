@@ -270,5 +270,19 @@ export function createOllama({ url, fetchImpl = fetch }) {
     }
   }
 
-  return { models, info, unload, remove, startPull, cancelPull, pullStatus, bench, chat };
+  // Akışsız tek cevap (ör. güncelleme özeti).
+  async function complete({ model, messages, numCtx = 8192, timeoutMs = 3 * 60_000 }) {
+    const body = { model, messages, stream: false, think: false, keep_alive: '5m', options: { temperature: 0.2, num_ctx: numCtx } };
+    let r = await call('/api/chat', { method: 'POST', body: JSON.stringify(body) }, timeoutMs);
+    if (r.status === 400) {
+      delete body.think;
+      r = await call('/api/chat', { method: 'POST', body: JSON.stringify(body) }, timeoutMs);
+    }
+    if (r.status === 404) throw Object.assign(new Error('not_found'), { status: 404 });
+    if (!r.ok) throw new Error(`ollama_http_${r.status}`);
+    const d = await r.json();
+    return String(d.message?.content ?? '').trim();
+  }
+
+  return { models, info, unload, remove, startPull, cancelPull, pullStatus, bench, chat, complete };
 }

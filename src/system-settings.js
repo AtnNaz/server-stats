@@ -117,6 +117,17 @@ export function parseAptConfigDump(text) {
 }
 
 // "apt-get -s upgrade" çıktısında kurulacak paketler "Inst" ile başlar.
+// "apt-get -s upgrade" çıktısındaki her "Inst" satırı: paket, eski ve yeni sürüm, kaynak depo.
+// Ör. "Inst libssl3 [3.0.2-0ubuntu1.1] (3.0.2-0ubuntu1.2 Ubuntu:22.04/jammy-security [amd64])"
+const INST = /^Inst (\S+)(?: \[([^\]]*)\])? \((\S+) ([^[)]*?)\s*(?:\[[^\]]*\])?\)/;
+export function parseAptUpgrades(text) {
+  return text
+    .split('\n')
+    .map((l) => INST.exec(l))
+    .filter(Boolean)
+    .map(([, name, from, to, repo]) => ({ name, from: from || null, to, repo: repo.trim(), security: /securi/i.test(repo) }));
+}
+
 export function countAptUpgrades(text) {
   const lines = text.split('\n').filter((l) => l.startsWith('Inst '));
   return { pending: lines.length, security: lines.filter((l) => /securi/i.test(l)).length };

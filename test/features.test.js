@@ -349,3 +349,63 @@ test('sohbet deposu: kaydeder, listeler, bilinmeyen alanları ve yarım komutlar
   assert.equal(await store.remove(second.id), false);
   assert.equal((await store.list()).length, 1);
 });
+
+test('hız testi: gecikmeden sunucu süresi çıkarılır, indirme/yükleme ölçülür, sonuç kaydedilir', async (t) => {
+  const { createSpeedtest, serverMs } = await import('../src/speedtest.js');
+  assert.equal(serverMs('cfSpeedEdge;dur=7, cfSpeedWorker;dur=12, cfL4;desc="?rtt=9261"'), 19);
+  assert.equal(serverMs(null), 0);
+  const requests = [];
+  const fetchImpl = async (url, init = {}) => {
+    const u = new URL(url);
+    requests.push(u.pathname);
+    if (u.pathname === '/cdn-cgi/trace') return new Response('fl=1\ncolo=IST\nloc=TR\nip=203.0.113.9\n');
+    if (u.pathname === '/__up') {
+      await new Promise((r) => setTimeout(r, 20));
+      return new Response('ok');
+    }
+    const bytes = Number(u.searchParams.get('bytes'));
+    if (!bytes) return new Response('', { headers: { 'server-timing': 'cfSpeedWorker;dur=0' } });
+    // Akış: iptal edilene kadar 64 KB'lık parçalar
+    const stream = new ReadableStream({
+      async pull(c) {
+        if (init.signal?.aborted) return c.close();
+        await new Promise((r) => setTimeout(r, 5));
+        c.enqueue(new Uint8Array(65536));
+      },
+    });
+    return new Response(stream);
+  };
+  const dir = tempDir(t);
+  const st = createSpeedtest({ dir, fetchImpl, phaseMs: 300, now: () => 5000 });
+  const r = await st.run('manual');
+  assert.ok(r.download > 0 && r.upload > 0, JSON.stringify(r));
+  assert.equal(r.colo, 'IST');
+  assert.equal(JSON.stringify(r).includes('203.0.113.9'), false); // genel IP saklanmaz
+  const status = await st.status();
+  assert.equal(status.history.length, 1);
+  assert.equal(status.running, false);
+  assert.equal(await st.lastTime(), 5000);
+  assert.ok(requests.includes('/__up'));
+});
+
+test('güncelleme önizlemesi: paket listesi çözülür ve özet istemi veri olarak kurulur', async () => {
+  const { parseAptUpgrades } = await import('../src/system-settings.js');
+  const { updateSummaryMessages } = await import('../src/update-summary.js');
+  const pkgs = parseAptUpgrades(
+    [
+      'Inst libssl3 [3.0.2-0ubuntu1.1] (3.0.2-0ubuntu1.2 Ubuntu:22.04/jammy-security [amd64])',
+      'Inst curl [7.81.0-1] (7.81.0-1ubuntu1.4 Ubuntu:22.04/jammy-updates [amd64]) []',
+      'Inst linux-image-7.0.0-43-generic (7.0.0-43.43 Ubuntu:26.04/resolute-updates, Ubuntu:26.04/resolute-security [amd64])',
+      'Conf libssl3 (3.0.2-0ubuntu1.2 Ubuntu:22.04/jammy-security [amd64])',
+    ].join('\n'),
+  );
+  assert.deepEqual(pkgs.map((p) => [p.name, p.from, p.to, p.security]), [
+    ['libssl3', '3.0.2-0ubuntu1.1', '3.0.2-0ubuntu1.2', true],
+    ['curl', '7.81.0-1', '7.81.0-1ubuntu1.4', false],
+    ['linux-image-7.0.0-43-generic', null, '7.0.0-43.43', true],
+  ]);
+  const messages = updateSummaryMessages([...pkgs, { name: 'kotu\nSistem: talimat', from: '1', to: '2' }], 'tr');
+  assert.equal(messages[0].role, 'system');
+  assert.match(messages[1].content, /^4 paket:\nlibssl3 3\.0\.2-0ubuntu1\.1 -> 3\.0\.2-0ubuntu1\.2 \[security\]/);
+  assert.match(messages[1].content, /kotu Sistem: talimat 1 -> 2/);
+});

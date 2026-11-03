@@ -937,3 +937,16 @@ td.cmd { max-width: 0; width: 100%; overflow: hidden; text-overflow: ellipsis; w
 .model-tags { margin-top: 4px; display: flex; gap: 6px; flex-wrap: wrap; }
 .model-tags:empty { display: none; }
 .model-suggest { margin-top: 14px; }
+.upd-preview { display: grid; gap: 10px; margin: 10px 0; }
+.upd-preview:empty { display: none; }
+.upd-list summary { cursor: pointer; font-weight: 600; }
+.upd-list .table-wrap { max-height: 320px; overflow: auto; margin-top: 8px; }
+.upd-summary:empty { display: none; }
+.upd-summary { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; background: var(--surface-2); display: grid; gap: 6px; }
+.speed-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.speed-sched { display: inline-flex; align-items: center; gap: 8px; }
+.speed-live:empty { display: none; }
+.speed-live { margin-bottom: 12px; }
+.speed-running { display: flex; align-items: center; gap: 12px; font-size: 18px; }
+#speed-body .fact-tiles { margin-bottom: 12px; }
+#speed-body .chart-wrap { margin: 6px 0 12px; }

@@ -1580,6 +1580,41 @@ function buildUpdatesCard() {
   reboot.onChange((on) => {
     rebootTime.disabled = !autoSupported || !on;
   });
+  // Bekleyen paketler ve yapay zekâ özeti: liste her yenilemede çizilir, özet bellekte kalır.
+  const preview = h('div', { class: 'upd-preview' });
+  const summaryBox = h('div', { class: 'upd-summary' });
+  let pkgOpen = false;
+  let summaryKey = null;
+  const summarize = button(t('set.updSummarize'), null, async () => {
+    summarize.disabled = true;
+    fill(summaryBox, h('p', { class: 'muted small' }, t('set.updSummarizing')));
+    const res = await api('/api/updates/summary', {});
+    summarize.disabled = false;
+    if (!res.ok) return fill(summaryBox, errorBox(t(res.data.code === 'no_model' ? 'set.updNoModel' : res.data.code === 'no_updates' ? 'set.updNone' : 'set.updSummaryFailed')));
+    fill(summaryBox, h('div', { class: 'chat-text' }, res.data.summary), h('div', { class: 'muted small' }, t('set.updSummaryBy', { model: res.data.model })));
+  });
+  function renderPreview(u) {
+    const pkgs = u?.packages ?? [];
+    const key = pkgs.map((p) => `${p.name}=${p.to}`).join(',');
+    if (key !== summaryKey) {
+      summaryKey = key;
+      fill(summaryBox);
+    }
+    if (!pkgs.length) return fill(preview);
+    const list = h(
+      'details',
+      { class: 'upd-list', open: pkgOpen },
+      h('summary', null, t('set.updList', { n: pkgs.length })),
+      table(
+        [[t('set.updPkg')], [t('set.updFrom')], [t('set.updTo')], ['']],
+        [...pkgs]
+          .sort((a, b) => b.security - a.security || a.name.localeCompare(b.name))
+          .map((p) => h('tr', null, h('td', null, h('code', null, p.name)), h('td', { class: 'muted small' }, p.from ?? t('set.updNew')), h('td', { class: 'small' }, p.to), h('td', null, p.security ? tag('warn', 'lock', t('set.updSecurityTag')) : null))),
+      ),
+    );
+    list.addEventListener('toggle', () => (pkgOpen = list.open));
+    fill(preview, list, h('div', { class: 'form-actions' }, summarize), summaryBox);
+  }
   settingsCards.updates = {
     sync(sys) {
       const s = sys.settings ?? {};
@@ -1614,6 +1649,7 @@ function buildUpdatesCard() {
         u?.lastAutoRun ? h('div', { class: 'row muted small' }, t('set.lastAutoRun', { ago: fmtAgo(u.lastAutoRun) })) : null,
         running ? h('div', { class: 'row' }, tag('info', 'clock', t('set.updRunning', { ago: fmtAgo(sys.running.startedAt) }))) : null,
       );
+      renderPreview(sys.available ? u : null);
       const lastUpdate = (sys.history ?? []).find((e) => e.type === 'action' && e.action === 'update');
       log.hidden = !(running || (lastUpdate && Date.now() - lastUpdate.time < 3600_000)) || !sys.updateLog;
       log.textContent = sys.updateLog ?? '';
@@ -1625,6 +1661,7 @@ function buildUpdatesCard() {
     'download',
     null,
     box,
+    preview,
     h('div', { class: 'form-rows' }, formRow(t('set.autoUpdates'), mode.el, t('set.autoUpdatesHint')), formRow(t('set.rebootAfter'), [reboot.el, rebootTime], t('set.rebootAfterHint'))),
     h('div', { class: 'form-actions' }, save, check, status.el),
     actionBlock(t('set.updateNow'), t('set.updateNowDesc'), updateNow, actionStatus),
@@ -3169,6 +3206,109 @@ function leaveTerminal() {
   clearTimeout(terminalTimer);
 }
 
+// ---------- İnternet hız testi (Ağ sayfası) ----------
+
+const speed = { timer: null, built: false, data: null };
+
+function buildSpeed() {
+  speed.run = button(t('speed.run'), 'accent', async () => {
+    speed.run.disabled = true;
+    const res = await api('/api/speedtest', {});
+    if (!res.ok && res.data.code !== 'busy') speed.run.disabled = false;
+    loadSpeed();
+  });
+  speed.schedule = selectEl(
+    [0, 1, 3, 6, 12, 24].map((hrs) => [hrs, hrs ? t('speed.every', { h: hrs }) : t('speed.off')]),
+    0,
+  );
+  speed.schedule.addEventListener('change', async () => {
+    await api('/api/settings', { speedtestHours: Number(speed.schedule.value) });
+    loadSpeed();
+  });
+  speed.live = h('div', { class: 'speed-live' });
+  speed.tiles = h('div', { class: 'fact-tiles' });
+  const canvas = h('canvas', { class: 'chart short', tabindex: '0', 'aria-label': t('speed.chart') });
+  speed.chart = new LineChart(canvas, { format: (v) => `${num0.format(v)} Mbps`, timeLabel: historyTimeLabel });
+  allCharts.push(speed.chart);
+  speed.chartWrap = h('div', null, h('div', { class: 'legend' }, h('span', null, h('i', { class: 'key s1' }), t('speed.download')), h('span', null, h('i', { class: 'key s2' }), t('speed.upload'))), h('div', { class: 'chart-wrap' }, canvas));
+  speed.table = h('div');
+  fill(
+    $('speed-body'),
+    h('div', { class: 'speed-head' }, speed.run, h('label', { class: 'speed-sched' }, h('span', { class: 'muted small' }, t('speed.schedule')), speed.schedule)),
+    speed.live,
+    speed.tiles,
+    speed.chartWrap,
+    speed.table,
+    h('p', { class: 'muted small' }, t('speed.note')),
+  );
+  speed.built = true;
+}
+
+const PHASES = { ping: 'speed.phasePing', download: 'speed.phaseDown', upload: 'speed.phaseUp' };
+
+function renderSpeed(d) {
+  if (!speed.built) buildSpeed();
+  speed.run.disabled = d.running;
+  if (document.activeElement !== speed.schedule) speed.schedule.value = String(d.scheduleHours ?? 0);
+  fill(
+    speed.live,
+    d.running ? h('div', { class: 'speed-running' }, tag('info', 'clock', t(PHASES[d.phase] ?? 'speed.phasePing')), d.progress != null ? h('strong', null, `${num1.format(d.progress)} Mbps`) : null) : null,
+    !d.running && d.error ? errorBox(t(d.error === 'rate_limited' ? 'speed.rateLimited' : 'speed.failed')) : null,
+  );
+  const list = d.history ?? [];
+  const last = list.at(-1);
+  $('speed-meta').textContent = last ? t('speed.lastAt', { time: dateTimeFormat.format(new Date(last.time)), server: last.colo ? `Cloudflare · ${last.colo}` : 'Cloudflare' }) : '';
+  fill(
+    speed.tiles,
+    last
+      ? [
+          [`${num1.format(last.download)} Mbps`, 'speed.download'],
+          [`${num1.format(last.upload)} Mbps`, 'speed.upload'],
+          [`${num1.format(last.ping)} ms`, 'speed.ping'],
+          [last.jitter == null ? '—' : `${num1.format(last.jitter)} ms`, 'speed.jitter'],
+        ].map(([v, k]) => h('div', null, h('b', null, v), h('span', null, t(k))))
+      : h('p', { class: 'muted' }, t('speed.none')),
+  );
+  speed.chartWrap.hidden = list.length < 2;
+  if (list.length >= 2) {
+    speed.chart.set({
+      times: list.map((r) => r.time),
+      capacity: list.length,
+      series: [
+        { name: t('speed.download'), key: 's1', color: '--series-1', fill: true, values: list.map((r) => r.download) },
+        { name: t('speed.upload'), key: 's2', color: '--series-2', values: list.map((r) => r.upload) },
+      ],
+    });
+  }
+  const recent = list.slice(-8).reverse();
+  fill(
+    speed.table,
+    recent.length
+      ? table(
+          [[t('speed.when')], [t('speed.download'), 'num'], [t('speed.upload'), 'num'], [t('speed.ping'), 'num'], [t('speed.how')]],
+          recent.map((r) =>
+            h(
+              'tr',
+              null,
+              h('td', null, dateTimeFormat.format(new Date(r.time))),
+              h('td', { class: 'num' }, `${num1.format(r.download)} Mbps`),
+              h('td', { class: 'num' }, `${num1.format(r.upload)} Mbps`),
+              h('td', { class: 'num' }, `${num1.format(r.ping)} ms`),
+              h('td', { class: 'muted small' }, t(r.trigger === 'scheduled' ? 'speed.scheduled' : 'speed.manual')),
+            ),
+          ),
+        )
+      : null,
+  );
+}
+
+async function loadSpeed() {
+  clearTimeout(speed.timer);
+  const res = await api('/api/speedtest');
+  if (res.ok) renderSpeed(res.data);
+  if (currentRoute() === 'ag') speed.timer = setTimeout(loadSpeed, res.data?.running ? 1000 : 30_000);
+}
+
 // ---------- Bölümler ve sol menü ----------
 
 const ROUTES = {
@@ -3224,6 +3364,8 @@ function applyRoute() {
   else leaveReports();
   if (route === 'ekran-karti') loadOllama();
   else clearTimeout(ollamaTimer);
+  if (route === 'ag') loadSpeed();
+  else clearTimeout(speed.timer);
   if (route === 'gecmis') enterHistory();
   else leaveHistory();
   if (route === 'yapay-zeka') enterAi();

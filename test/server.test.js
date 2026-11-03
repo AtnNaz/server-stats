@@ -219,6 +219,17 @@ test('yapay zekâ komutu: oturum, onay ve hizmet denetimi', async (t) => {
   assert.deepEqual([term.available, term.execAvailable], [false, false]);
 });
 
+test('hız testi ve güncelleme özeti: oturum, ayar doğrulaması ve boş durum', async (t) => {
+  const { base } = await startServer(t);
+  assert.equal((await fetch(`${base}/api/speedtest`)).status, 401);
+  const cookie = await signIn(base);
+  const st = await (await fetch(`${base}/api/speedtest`, { headers: { Cookie: cookie } })).json();
+  assert.deepEqual([st.running, st.history, st.scheduleHours], [false, [], 0]);
+  assert.equal((await post(base, '/api/settings', { speedtestHours: 5 }, cookie)).status, 400);
+  assert.equal((await (await post(base, '/api/settings', { speedtestHours: 6 }, cookie)).json()).panel.speedtestHours, 6);
+  assert.equal((await (await post(base, '/api/updates/summary', {}, cookie)).json()).code, 'no_updates');
+});
+
 test('sohbetler: oturumla kaydedilir, listelenir, açılır ve silinir', async (t) => {
   const { base } = await startServer(t);
   assert.equal((await fetch(`${base}/api/chats`)).status, 401);

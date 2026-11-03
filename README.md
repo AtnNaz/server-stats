@@ -12,13 +12,15 @@ Geliştirici: [Ali Toprak Naz](https://github.com/AtnNaz) · Lisans: [PolyForm N
 - **Sıcaklık ve fanlar:** işlemci, NVMe diskler, anakart sensörleri ve fan devirleri
 - **Ekran kartı:** NVIDIA kartlarda kullanım, VRAM, sıcaklık, güç ve kartı kullanan süreçler (`nvidia-smi` varsa kendiliğinden açılır)
 - **Docker:** konteynerler ve durumları (isteğe bağlı)
+- **İnternet hızı:** Ağ sayfasından tek tıkla hız testi (sunucu ile Cloudflare arasında indirme, yükleme, gecikme); isteğe bağlı 1–24 saatte bir otomatik test ve geçmiş grafiği
+- **Güncelleme önizlemesi:** Ayarlar → Güncellemeler'de bekleyen paketlerin listesi (güvenlik güncellemeleri işaretli) ve yerel modelle kısa bir özet
 - **Geçmiş:** işlemci, bellek, sıcaklık, ağ, disk ve ekran kartı değerleri dakikalık olarak 30 gün saklanır; son 24 saat, 7 gün ve 30 günlük grafikler
 - **Terminal:** sunucunun komut satırı tarayıcıda (htop, nano, sudo çalışır); seçtiğiniz kullanıcıyla açılır, varsayılan kapalıdır (bkz. [Terminal](#terminal))
 - **Yapay zekâ:** sunucudaki [Ollama](https://ollama.com) ile sohbet, model indirme/silme ve hız testi; hiçbir şey dışarı gönderilmez. Sohbetler sunucuda saklanır (`/var/lib/serverhealth-panel/chats`), böylece başka bir cihazdan da devam edilir; ekran kartı belleğine sığan modeller önerilir. Model sunucunun anlık durumunu (diskler, SMART, sıcaklık, ekran kartı, servisler, güncellemeler, son rapor) her zaman görür. "Komut çalıştırma" açıksa sorunları araştırmak için kendisi komut da çalıştırabilir (bkz. [Yapay zekâ komutları](#yapay-zekâ-komutları))
 
 Panel sol menüden bölümlere ayrılır (Genel bakış, Geçmiş, Ekran kartı, Depolama, Ağ, Süreçler, Servisler, Terminal, Yapay zekâ, Raporlar); menüdeki rozetler sorunlu bölümleri işaret eder. Birkaç saniyede bir kendini günceller; canlı grafikler son 10 dakikayı, Geçmiş sayfası son 30 günü gösterir. Giriş ekranından oturum açılır; aynı veriler `/api/stats` adresinden JSON olarak da alınabilir (bkz. [API](#api)).
 
-Hiçbir npm paketine ihtiyaç duymaz; yalnızca Node.js'in kendi modüllerini kullanır (terminal ekranı için [xterm.js](https://xtermjs.org) dosyaları `public/vendor` içinde gelir, MIT lisanslı) ve bilgileri doğrudan `/proc`, `/sys` ve `systemctl` üzerinden okur. Tek dış bağlantı, iki günde bir GitHub'dan son sürüm numarasını sormaktır; bu istekte sunucuya dair hiçbir bilgi gönderilmez ve `"updateCheck": false` ile kapatılabilir.
+Hiçbir npm paketine ihtiyaç duymaz; yalnızca Node.js'in kendi modüllerini kullanır (terminal ekranı için [xterm.js](https://xtermjs.org) dosyaları `public/vendor` içinde gelir, MIT lisanslı) ve bilgileri doğrudan `/proc`, `/sys` ve `systemctl` üzerinden okur. Kendiliğinden yapılan tek dış bağlantı, iki günde bir GitHub'dan son sürüm numarasını sormaktır; bu istekte sunucuya dair hiçbir bilgi gönderilmez ve `"updateCheck": false` ile kapatılabilir. İnternet hız testi yalnızca siz başlattığınızda ya da Ağ sayfasında otomatik testi açtığınızda Cloudflare'in hız testi sunucusuna (`speed.cloudflare.com`) bağlanır.
 
 ## Gereksinimler
 
