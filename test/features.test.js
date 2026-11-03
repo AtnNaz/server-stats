@@ -316,3 +316,36 @@ test('root komutu: "&&" ile bağlı basit adımlar şifreyle çalışabilir', as
     assert.equal(rootSteps(bad), null, bad);
   }
 });
+
+test('sohbet deposu: kaydeder, listeler, bilinmeyen alanları ve yarım komutları temizler, siler', async (t) => {
+  const { createChatStore } = await import('../src/chat-store.js');
+  let clock = 1000;
+  const store = createChatStore({ dir: tempDir(t), now: () => clock });
+  const first = await store.save(null, {
+    model: 'qwen3.5:4b',
+    messages: [
+      { role: 'user', content: 'Diskler   nasıl?', password: 'gizli' },
+      { role: 'assistant', content: 'Bakıyorum', calls: [{ command: 'lsblk', state: 'done', auto: true, result: { code: 0, output: 'sda' }, passEl: {} }, { command: 'rm x', state: 'approval' }] },
+      { role: 'system', content: 'talimat' },
+    ],
+  });
+  assert.equal(first.title, 'Diskler nasıl?');
+  const saved = await store.get(first.id);
+  assert.equal(saved.messages.length, 2);
+  assert.equal(saved.messages[0].password, undefined);
+  assert.deepEqual(saved.messages[1].calls[0], { command: 'lsblk', reason: '', auto: true, state: 'done', result: { code: 0, output: 'sda', truncated: false, timedOut: false } });
+  assert.equal(saved.messages[1].calls[1].state, 'rejected');
+
+  clock = 2000;
+  const second = await store.save(null, { model: 'a', messages: [{ role: 'user', content: 'ikinci' }] });
+  clock = 3000;
+  await store.save(first.id, { model: 'a', messages: [...saved.messages, { role: 'user', content: 'devam' }] });
+  assert.deepEqual((await store.list()).map((c) => [c.id, c.count]), [[first.id, 3], [second.id, 1]]);
+  assert.equal((await store.get(first.id)).createdAt, 1000);
+
+  assert.equal(await store.save('../../etc/passwd', { messages: [] }), null);
+  assert.equal(await store.get('../x'), null);
+  assert.equal(await store.remove(second.id), true);
+  assert.equal(await store.remove(second.id), false);
+  assert.equal((await store.list()).length, 1);
+});

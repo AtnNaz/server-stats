@@ -21,6 +21,7 @@ import { createOllama, validateChat, RUN_COMMAND_TOOL } from './ollama.js';
 import { classifyCommand, rootSteps } from './command-policy.js';
 import { runCommand } from './exec.js';
 import { buildServerContext } from './server-context.js';
+import { createChatStore } from './chat-store.js';
 import { upgrade } from './websocket.js';
 import { createTerminals, terminalAvailable } from './terminal.js';
 
@@ -41,6 +42,8 @@ const JSON_TYPE = 'application/json; charset=utf-8';
 const MAX_BODY = 4096;
 // Sohbet isteği tüm konuşmayı taşır.
 const MAX_CHAT_BODY = 512 * 1024;
+// Kaydedilen sohbet komut çıktılarını da taşır.
+const MAX_SAVE_BODY = 4 * 1024 * 1024;
 
 // Yalnızca bu dosyalar sunulur; dosya yolu istekten türetilmez.
 // public: true olanlar oturum açmadan da yüklenebilir (giriş sayfası için).
@@ -223,6 +226,21 @@ function main() {
   }
 
   const ollama = createOllama({ url: config.ollama.url });
+  const chats = createChatStore({ dir: path.join(stateDir, 'chats') });
+
+  async function handleChatSave(req, res) {
+    const body = await readJsonBody(req, res, MAX_SAVE_BODY);
+    if (!body) return;
+    const saved = await chats.save(body.id ?? null, body);
+    if (!saved) return sendJson(req, res, 400, { code: 'invalid' });
+    return sendJson(req, res, 200, { id: saved.id, title: saved.title, updatedAt: saved.updatedAt });
+  }
+
+  async function handleChatDelete(req, res) {
+    const body = await readJsonBody(req, res);
+    if (!body) return;
+    return sendJson(req, res, (await chats.remove(body.id)) ? 200 : 404, { ok: true });
+  }
 
   async function latestReport() {
     const [last] = await listReports();
@@ -466,6 +484,8 @@ function main() {
       if (pathname === '/api/ollama/bench') return handleOllamaModel(req, res, 'bench');
       if (pathname === '/api/ollama/chat') return handleOllamaChat(req, res);
       if (pathname === '/api/ai/exec') return handleAiExec(req, res);
+      if (pathname === '/api/chats/save') return handleChatSave(req, res);
+      if (pathname === '/api/chats/delete') return handleChatDelete(req, res);
       return send(req, res, 405, TEXT, 'Method not allowed\n', { Allow: 'GET, HEAD' });
     }
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(req, res, 405, TEXT, 'İzin verilmeyen yöntem\n', { Allow: 'GET, HEAD, POST' });
@@ -516,6 +536,12 @@ function main() {
     }
     if (pathname === '/api/ollama/models') return sendJson(req, res, 200, await ollama.models());
     if (pathname === '/api/ollama') return sendJson(req, res, 200, await ollama.info());
+    if (pathname === '/api/chats') return sendJson(req, res, 200, { chats: await chats.list() });
+    const chatMatch = /^\/api\/chats\/([0-9a-f-]{36})$/.exec(pathname);
+    if (chatMatch) {
+      const chat = await chats.get(chatMatch[1]);
+      return chat ? sendJson(req, res, 200, chat) : sendJson(req, res, 404, { code: 'not_found' });
+    }
     if (pathname === '/api/history') {
       const range = new URL(req.url, 'http://localhost').searchParams.get('range') ?? '1d';
       if (!Object.hasOwn(RANGES, range)) return sendJson(req, res, 400, { code: 'invalid' });

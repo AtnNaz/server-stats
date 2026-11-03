@@ -218,3 +218,17 @@ test('yapay zekâ komutu: oturum, onay ve hizmet denetimi', async (t) => {
   const term = await (await fetch(`${base}/api/terminal`, { headers: { Cookie: cookie } })).json();
   assert.deepEqual([term.available, term.execAvailable], [false, false]);
 });
+
+test('sohbetler: oturumla kaydedilir, listelenir, açılır ve silinir', async (t) => {
+  const { base } = await startServer(t);
+  assert.equal((await fetch(`${base}/api/chats`)).status, 401);
+  const cookie = await signIn(base);
+  const saved = await (await post(base, '/api/chats/save', { model: 'm', messages: [{ role: 'user', content: 'merhaba' }] }, cookie)).json();
+  assert.match(saved.id, /^[0-9a-f-]{36}$/);
+  const list = await (await fetch(`${base}/api/chats`, { headers: { Cookie: cookie } })).json();
+  assert.equal(list.chats[0].title, 'merhaba');
+  assert.equal((await (await fetch(`${base}/api/chats/${saved.id}`, { headers: { Cookie: cookie } })).json()).messages[0].content, 'merhaba');
+  assert.equal((await post(base, '/api/chats/save', { messages: 'x' }, cookie)).status, 400);
+  assert.equal((await post(base, '/api/chats/delete', { id: saved.id }, cookie)).status, 200);
+  assert.equal((await fetch(`${base}/api/chats/${saved.id}`, { headers: { Cookie: cookie } })).status, 404);
+});

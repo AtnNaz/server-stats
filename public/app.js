@@ -2511,21 +2511,24 @@ const MAX_TOOL_ROUNDS = 6;
 // Modele geri verilen komut çıktısı bu uzunlukta kesilir (bağlam penceresi dolmasın).
 const MAX_TOOL_OUTPUT = 6000;
 const FINISHED = ['done', 'rejected', 'error'];
-const aiState = { info: null, model: null, think: false, exec: false, execAvailable: false, execUser: null, messages: [], streaming: null, bench: {} };
+const aiState = { info: null, model: null, think: false, exec: false, execAvailable: false, execUser: null, chatId: null, chats: [], migrate: false, messages: [], streaming: null, bench: {} };
 let aiTimer = null;
 let aiBuilt = false;
 const ai = {};
 
+// Sohbetler sunucuda saklanır; tarayıcıda yalnızca seçimler (model, anahtarlar, açık sohbet) durur.
 function loadChat() {
   try {
     const saved = JSON.parse(localStorage.getItem(CHAT_KEY) ?? 'null');
-    if (saved && Array.isArray(saved.messages)) {
+    if (!saved) return;
+    aiState.model = typeof saved.model === 'string' ? saved.model : null;
+    aiState.think = saved.think === true;
+    aiState.exec = saved.exec === true;
+    aiState.chatId = typeof saved.chatId === 'string' ? saved.chatId : null;
+    // Önceki sürümde tarayıcıda tutulan sohbet bir kez sunucuya taşınır.
+    if (!aiState.chatId && Array.isArray(saved.messages) && saved.messages.length) {
       aiState.messages = saved.messages.filter((m) => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string');
-      // Sayfa kapanırken onay bekleyen ya da çalışan komutlar yarım kalmıştır.
-      for (const m of aiState.messages) for (const c of m.calls ?? []) if (!FINISHED.includes(c.state)) c.state = 'rejected';
-      aiState.model = typeof saved.model === 'string' ? saved.model : null;
-      aiState.think = saved.think === true;
-      aiState.exec = saved.exec === true;
+      aiState.migrate = true;
     }
   } catch {
     /* kayıt yoksa boş sohbetle başlanır */
@@ -2534,10 +2537,78 @@ function loadChat() {
 
 function saveChat() {
   try {
-    localStorage.setItem(CHAT_KEY, JSON.stringify({ model: aiState.model, think: aiState.think, exec: aiState.exec, messages: aiState.messages.slice(-100) }));
+    localStorage.setItem(CHAT_KEY, JSON.stringify({ model: aiState.model, think: aiState.think, exec: aiState.exec, chatId: aiState.chatId }));
   } catch {
-    /* depolama kapalıysa sohbet bu sekmeyle sınırlı kalır */
+    /* depolama kapalıysa seçimler bu sekmeyle sınırlı kalır */
   }
+}
+
+// Açık sohbeti sunucuya yazar; ilk kayıtta sunucu yeni bir kimlik verir.
+async function persistChat() {
+  if (!aiState.messages.length) return;
+  const messages = aiState.messages.map(({ resolve, passEl, ...m }) => ({ ...m, calls: m.calls?.map(({ resolve: _r, passEl: _p, ...c }) => c) }));
+  const res = await api('/api/chats/save', { id: aiState.chatId, model: aiState.model, messages });
+  if (res.ok) {
+    aiState.chatId = res.data.id;
+    saveChat();
+    loadChats();
+  }
+}
+
+async function loadChats() {
+  const res = await api('/api/chats');
+  if (!res.ok) return;
+  aiState.chats = res.data.chats;
+  renderChatList();
+}
+
+async function openChat(id) {
+  if (aiState.streaming) return;
+  const res = await api(`/api/chats/${id}`);
+  if (!res.ok) {
+    if (aiState.chatId === id) newChat();
+    return;
+  }
+  aiState.chatId = id;
+  aiState.messages = res.data.messages ?? [];
+  // Sayfa kapanırken onay bekleyen ya da çalışan komutlar yarım kalmıştır.
+  for (const m of aiState.messages) for (const c of m.calls ?? []) if (!FINISHED.includes(c.state)) c.state = 'rejected';
+  saveChat();
+  renderChat();
+  renderChatList();
+}
+
+function newChat() {
+  if (aiState.streaming) return;
+  aiState.chatId = null;
+  aiState.messages = [];
+  saveChat();
+  renderChat();
+  renderChatList();
+  ai.input?.focus();
+}
+
+const chatTimeFormat = new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+
+function renderChatList() {
+  if (!ai.list) return;
+  fill(
+    ai.list,
+    aiState.chats.length
+      ? aiState.chats.map((c) => {
+          const open = h('button', { type: 'button', class: 'chat-item-open', 'aria-current': c.id === aiState.chatId ? 'true' : null }, h('span', { class: 'chat-item-title' }, c.title || t('ai.untitled')), h('span', { class: 'muted small' }, chatTimeFormat.format(new Date(c.updatedAt))));
+          open.addEventListener('click', () => openChat(c.id));
+          const del = h('button', { type: 'button', class: 'chat-item-del', title: t('ai.deleteChat'), 'aria-label': t('ai.deleteChat') }, '×');
+          del.addEventListener('click', async () => {
+            if (!(await confirmDialog(t('ai.deleteChatTitle'), c.title || t('ai.untitled'), t('ai.delete')))) return;
+            await api('/api/chats/delete', { id: c.id });
+            if (c.id === aiState.chatId) newChat();
+            loadChats();
+          });
+          return h('div', { class: 'chat-item' }, open, del);
+        })
+      : h('p', { class: 'muted small' }, t('ai.noChats')),
+  );
 }
 
 function chatStats(stats) {
@@ -2761,9 +2832,9 @@ async function sendChat() {
     }
   } finally {
     aiState.streaming = null;
-    saveChat();
     renderChat();
     ai.input.focus();
+    await persistChat();
   }
 }
 
@@ -2792,11 +2863,8 @@ function buildAi() {
     saveChat();
   });
   updateExecSwitch();
-  ai.clear = button(t('ai.newChat'), null, () => {
-    aiState.messages = [];
-    saveChat();
-    renderChat();
-  });
+  ai.clear = button(t('ai.newChat'), null, newChat);
+  ai.list = h('nav', { class: 'chat-list', 'aria-label': t('ai.chats') });
   ai.log = h('div', { class: 'chat-log', 'aria-live': 'polite' });
   ai.input = h('textarea', { class: 'input chat-input', rows: '3', placeholder: t('ai.placeholder'), 'aria-label': t('ai.placeholder') });
   ai.input.addEventListener('keydown', (e) => {
@@ -2810,8 +2878,7 @@ function buildAi() {
     'article',
     { class: 'card chat-card' },
     h('div', { class: 'card-head' }, h('h2', { class: 'card-title' }, icon('chip'), h('span', null, t('ai.chat'))), h('div', { class: 'chat-tools' }, ai.model, ai.exec.el, think.el, ai.clear)),
-    ai.log,
-    h('div', { class: 'chat-compose' }, ai.input, ai.send),
+    h('div', { class: 'chat-body' }, ai.list, h('div', { class: 'chat-main' }, ai.log, h('div', { class: 'chat-compose' }, ai.input, ai.send))),
   );
 
   ai.pullInput = inputEl('text', '', { placeholder: t('ai.pullPlaceholder'), 'aria-label': t('ai.pullPlaceholder'), spellcheck: 'false', autocomplete: 'off' });
@@ -2833,6 +2900,13 @@ function buildAi() {
   fill($('ai-root'), h('div', { class: 'ai-grid' }, chatCard, modelsCard));
   aiBuilt = true;
   renderChat();
+  if (aiState.migrate) {
+    aiState.migrate = false;
+    persistChat();
+  } else if (aiState.chatId) {
+    openChat(aiState.chatId);
+  }
+  loadChats();
 }
 
 async function startPull() {
@@ -2864,6 +2938,61 @@ function renderPull(p) {
   fill(ai.pullStatus, head, meter(pct ?? 0, 101, 101), h('div', { class: 'pull-actions' }, cancel));
 }
 
+// Ollama kitaplığındaki bazı yaygın modeller ve yaklaşık indirme boyutları (GB, Q4 sürümleri).
+const SUGGESTED_MODELS = [
+  ['qwen3:4b', 2.5, 'ai.sugFast'],
+  ['gemma3:4b', 3.3, 'ai.sugFast'],
+  ['llama3.1:8b', 4.9, 'ai.sugGeneral'],
+  ['qwen3:8b', 5.2, 'ai.sugGeneral'],
+  ['deepseek-r1:8b', 5.2, 'ai.sugReason'],
+  ['gemma3:12b', 8.1, 'ai.sugGeneral'],
+  ['phi4:14b', 9.1, 'ai.sugReason'],
+  ['qwen3:14b', 9.3, 'ai.sugGeneral'],
+  ['qwen2.5-coder:14b', 9.0, 'ai.sugCode'],
+  ['mistral-small3.2:24b', 15, 'ai.sugGeneral'],
+  ['gemma3:27b', 17, 'ai.sugGeneral'],
+  ['qwen3:32b', 20, 'ai.sugGeneral'],
+];
+const GB = 1e9;
+// Model ve bağlam belleği için yaklaşık pay: model dosyası + 1,5 GB ekran kartına sığmalı.
+const VRAM_HEADROOM = 1.5 * GB;
+
+// En büyük ayrık ekran kartının belleği (bayt); paylaşımlı bellekli tümleşik kartlar sayılmaz.
+function gpuVram() {
+  const sizes = (lastData?.snapshot?.gpu?.gpus ?? []).filter((g) => !g.sharedMemory && g.memoryTotal).map((g) => g.memoryTotal);
+  return sizes.length ? Math.max(...sizes) : null;
+}
+
+function fitTag(size, vram) {
+  if (!vram || !size) return null;
+  return size + VRAM_HEADROOM <= vram ? tag('ok', 'ok', t('ai.fitsGpu')) : tag('warn', 'warn', t('ai.partlyCpu'));
+}
+
+function suggestionsEl(installed, vram) {
+  if (!vram) return null;
+  const have = new Set(installed.map((m) => m.name));
+  const list = SUGGESTED_MODELS.filter(([name, gb]) => !have.has(name) && gb * GB + VRAM_HEADROOM <= vram).reverse().slice(0, 6);
+  if (!list.length) return null;
+  return h(
+    'div',
+    { class: 'model-suggest' },
+    h('h3', { class: 'oll-sub' }, t('ai.suggested', { gb: num0.format(vram / 1024 ** 3) })),
+    h(
+      'ul',
+      { class: 'model-list' },
+      list.map(([name, gb, kind]) => {
+        const get = button(t('ai.pull'), null, () => {
+          ai.pullInput.value = name;
+          startPull();
+        });
+        get.disabled = Boolean(aiState.info?.pull && !aiState.info.pull.done);
+        return h('li', null, h('div', { class: 'model-main' }, h('div', null, h('strong', null, name), h('div', { class: 'muted small' }, `${t(kind)} · ~${num1.format(gb)} GB`)), h('div', { class: 'model-actions' }, get)));
+      }),
+    ),
+    h('p', { class: 'muted small' }, t('ai.suggestedHint')),
+  );
+}
+
 function renderModels(d) {
   ai.meta.textContent = d.version ? `Ollama v${d.version}` : 'Ollama';
   const names = d.installed.map((m) => m.name);
@@ -2875,7 +3004,9 @@ function renderModels(d) {
   }
   ai.send.disabled = !current && !aiState.streaming;
   const loaded = new Set(d.loaded.map((m) => m.name));
-  if (!d.installed.length) return fill(ai.models, h('p', { class: 'muted' }, t('oll.noneInstalled')));
+  const vram = gpuVram();
+  const suggestions = suggestionsEl(d.installed, vram);
+  if (!d.installed.length) return fill(ai.models, h('p', { class: 'muted' }, t('oll.noneInstalled')), suggestions);
   fill(
     ai.models,
     h(
@@ -2912,11 +3043,12 @@ function renderModels(d) {
         return h(
           'li',
           null,
-          h('div', { class: 'model-main' }, h('div', null, h('strong', null, m.name), loaded.has(m.name) ? [' ', tag('ok', 'ok', t('oll.inMemory'))] : null, h('div', { class: 'muted small' }, info)), h('div', { class: 'model-actions' }, benchBtn, del)),
+          h('div', { class: 'model-main' }, h('div', null, h('strong', null, m.name), loaded.has(m.name) ? [' ', tag('ok', 'ok', t('oll.inMemory'))] : null, h('div', { class: 'muted small' }, info), h('div', { class: 'model-tags' }, fitTag(m.size, vram))), h('div', { class: 'model-actions' }, benchBtn, del)),
           benchText,
         );
       }),
     ),
+    suggestions,
   );
 }
 

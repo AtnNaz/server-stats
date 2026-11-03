@@ -14,7 +14,7 @@ Geliştirici: [Ali Toprak Naz](https://github.com/AtnNaz) · Lisans: [PolyForm N
 - **Docker:** konteynerler ve durumları (isteğe bağlı)
 - **Geçmiş:** işlemci, bellek, sıcaklık, ağ, disk ve ekran kartı değerleri dakikalık olarak 30 gün saklanır; son 24 saat, 7 gün ve 30 günlük grafikler
 - **Terminal:** sunucunun komut satırı tarayıcıda (htop, nano, sudo çalışır); seçtiğiniz kullanıcıyla açılır, varsayılan kapalıdır (bkz. [Terminal](#terminal))
-- **Yapay zekâ:** sunucudaki [Ollama](https://ollama.com) ile sohbet, model indirme/silme ve hız testi; hiçbir şey dışarı gönderilmez. Model sunucunun anlık durumunu (diskler, SMART, sıcaklık, ekran kartı, servisler, güncellemeler, son rapor) her zaman görür. "Komut çalıştırma" açıksa sorunları araştırmak için kendisi komut da çalıştırabilir (bkz. [Yapay zekâ komutları](#yapay-zekâ-komutları))
+- **Yapay zekâ:** sunucudaki [Ollama](https://ollama.com) ile sohbet, model indirme/silme ve hız testi; hiçbir şey dışarı gönderilmez. Sohbetler sunucuda saklanır (`/var/lib/serverhealth-panel/chats`), böylece başka bir cihazdan da devam edilir; ekran kartı belleğine sığan modeller önerilir. Model sunucunun anlık durumunu (diskler, SMART, sıcaklık, ekran kartı, servisler, güncellemeler, son rapor) her zaman görür. "Komut çalıştırma" açıksa sorunları araştırmak için kendisi komut da çalıştırabilir (bkz. [Yapay zekâ komutları](#yapay-zekâ-komutları))
 
 Panel sol menüden bölümlere ayrılır (Genel bakış, Geçmiş, Ekran kartı, Depolama, Ağ, Süreçler, Servisler, Terminal, Yapay zekâ, Raporlar); menüdeki rozetler sorunlu bölümleri işaret eder. Birkaç saniyede bir kendini günceller; canlı grafikler son 10 dakikayı, Geçmiş sayfası son 30 günü gösterir. Giriş ekranından oturum açılır; aynı veriler `/api/stats` adresinden JSON olarak da alınabilir (bkz. [API](#api)).
 
@@ -254,7 +254,7 @@ Let's Encrypt anahtarlarını yalnızca root okuyabildiği için systemd bunlar�
 - Süreç komut satırları bazen parola içerebilir (ör. `mysql -pGizli`). Bunu istemiyorsanız `processes.showCommandLine` değerini `false` yapın.
 - Bir portu hangi sürecin dinlediği gösterilmez; bunun için root yetkisi gerekir.
 - **Terminal:** panelden açılan terminal, seçilen kullanıcının yapabildiği her şeyi yapabilir. Panel şifresini bilen biri bu kullanıcının kabuğuna erişir; güçlü bir panel şifresi kullanın, ihtiyacınız yoksa terminali kapalı tutun. Ayrıntılar: [Terminal](#terminal).
-- **Yapay zekâ:** sohbet ve model işlemleri yalnızca bu makinedeki Ollama'ya gider; sohbet geçmişi sunucuda değil, tarayıcınızda tutulur.
+- **Yapay zekâ:** sohbet ve model işlemleri yalnızca bu makinedeki Ollama'ya gider. Sohbetler panelin durum klasöründe yalnızca panel kullanıcısının okuyabileceği dosyalarda (0600) saklanır; komut çıktıları dahildir, sudo şifreleri hiçbir zaman kaydedilmez. En fazla 200 sohbet tutulur, eskiler silinir.
 
 ## Sorun giderme
 
