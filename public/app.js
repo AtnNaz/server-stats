@@ -831,6 +831,15 @@ function physTile(d) {
   );
 }
 
+const ALL_DISKS = '__all__';
+
+// Seçili diskin (ya da "Tümü" seçiliyse bütün disklerin toplam) okuma [0] veya yazma [1] hızı.
+function diskIo(point, i) {
+  if (selectedDisk !== ALL_DISKS) return point.io?.[selectedDisk]?.[i] ?? null;
+  const values = Object.values(point.io ?? {}).map((v) => v[i]).filter((v) => v != null);
+  return values.length ? values.reduce((a, b) => a + b, 0) : null;
+}
+
 function renderStorage(st, history, capacity) {
   const body = $('phys-body');
   if (st.error) {
@@ -838,13 +847,11 @@ function renderStorage(st, history, capacity) {
     return fill(body, errorBox(st.error));
   }
   const devices = st.devices;
-  if (!devices.some((d) => d.name === selectedDisk)) {
-    // Varsayılan: şu an en çok okuma/yazma yapan disk
-    selectedDisk = [...devices].sort((a, b) => (b.readRate ?? 0) + (b.writeRate ?? 0) - ((a.readRate ?? 0) + (a.writeRate ?? 0)))[0]?.name ?? null;
-  }
+  // Varsayılan "Tümü": bütün disklerin toplam okuma/yazma hızı.
+  if (selectedDisk !== ALL_DISKS && !devices.some((d) => d.name === selectedDisk)) selectedDisk = ALL_DISKS;
   renderTabs(
     $('io-tabs'),
-    devices.map((d) => ({ id: d.name, label: diskLabel(d), title: `${d.model} (/dev/${d.name})` })),
+    [{ id: ALL_DISKS, label: t('io.all'), title: t('io.allTitle') }, ...devices.map((d) => ({ id: d.name, label: diskLabel(d), title: `${d.model} (/dev/${d.name})` }))],
     selectedDisk,
     (id) => {
       selectedDisk = id;
@@ -855,8 +862,8 @@ function renderStorage(st, history, capacity) {
     times: history.map((p) => p.t),
     capacity,
     series: [
-      { name: t('io.read'), key: 's1', color: '--series-1', fill: true, values: history.map((p) => p.io?.[selectedDisk]?.[0] ?? null) },
-      { name: t('io.write'), key: 's2', color: '--series-2', values: history.map((p) => p.io?.[selectedDisk]?.[1] ?? null) },
+      { name: t('io.read'), key: 's1', color: '--series-1', fill: true, values: history.map((p) => diskIo(p, 0)) },
+      { name: t('io.write'), key: 's2', color: '--series-2', values: history.map((p) => diskIo(p, 1)) },
     ],
   });
   const sum = (key) => devices.reduce((s, d) => s + (d[key] ?? 0), 0);
