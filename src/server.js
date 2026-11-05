@@ -26,6 +26,8 @@ import { updateSummaryMessages } from './update-summary.js';
 import { createSpeedtest } from './speedtest.js';
 import { upgrade } from './websocket.js';
 import { createTerminals, terminalAvailable } from './terminal.js';
+import { runQuery, queryAvailable } from './query.js';
+import { validateQuery, validScanPath } from './query-protocol.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -245,6 +247,80 @@ function main() {
     if (!speedtest.start('manual')) return sendJson(req, res, 409, { code: 'busy' });
     console.log(`Hız testi istendi (${clientIp(req)})`);
     return sendJson(req, res, 202, { started: true });
+  }
+
+  // --- Root sorgu yardımcısı: disk alanı analizi, günlükler, güvenlik ---
+
+  const QUERY_ERRORS = { unavailable: 409, timeout: 504, invalid: 400, not_found: 404, not_dir: 400, bad_cursor: 409 };
+  function sendQueryError(req, res, err) {
+    const code = err.code === 'unavailable' ? 'query_unavailable' : err.code ?? 'failed';
+    return sendJson(req, res, QUERY_ERRORS[err.code] ?? 502, { code });
+  }
+  const query = (request, timeoutMs = 20_000) => runQuery({ socketPath: config.query.socket, request, timeoutMs });
+
+  // Disk taraması uzun sürebilir: arka planda yürür, tarayıcı durumu yoklar. Aynı anda tek tarama
+  // çalışır; son sonuçlar bir süre bellekte tutulur, aynı klasör yeniden istenince hemen gelir.
+  const USAGE_TTL = 30 * 60_000;
+  const usage = { job: null, results: new Map() };
+  function usageStatus(p) {
+    const cached = usage.results.get(p);
+    return { running: usage.job?.path ?? null, startedAt: usage.job?.startedAt ?? null, result: cached?.result ?? null, error: cached?.error ?? null, at: cached?.at ?? null };
+  }
+
+  async function handleDiskUsage(req, res) {
+    const body = await readJsonBody(req, res);
+    if (!body) return;
+    if (!validScanPath(body.path)) return sendJson(req, res, 400, { code: 'invalid' });
+    if (!(await queryAvailable(config.query.socket))) return sendJson(req, res, 409, { code: 'query_unavailable' });
+    const cached = usage.results.get(body.path);
+    if (body.refresh !== true && cached?.result && Date.now() - cached.at < USAGE_TTL) return sendJson(req, res, 200, usageStatus(body.path));
+    if (usage.job) return sendJson(req, res, usage.job.path === body.path ? 202 : 409, { ...usageStatus(body.path), ...(usage.job.path !== body.path && { code: 'busy' }) });
+    usage.job = { path: body.path, startedAt: Date.now() };
+    console.log(`Disk alanı analizi: ${body.path} (${clientIp(req)})`);
+    query({ op: 'du', path: body.path }, 210_000)
+      .then(
+        (result) => usage.results.set(body.path, { result, at: Date.now() }),
+        (err) => usage.results.set(body.path, { error: err.code ?? 'failed', at: Date.now() }),
+      )
+      .finally(() => {
+        usage.job = null;
+        while (usage.results.size > 8) usage.results.delete(usage.results.keys().next().value);
+      });
+    return sendJson(req, res, 202, usageStatus(body.path));
+  }
+
+  async function handleLogs(req, res, params) {
+    const opt = (k) => params.get(k) ?? undefined;
+    const num = (k) => (params.has(k) ? Number(params.get(k)) : undefined);
+    const request = validateQuery({
+      op: 'logs',
+      source: { kind: opt('source') ?? 'all', name: opt('name') },
+      priority: num('priority'),
+      since: opt('since'),
+      search: opt('q'),
+      limit: num('limit'),
+      after: opt('after'),
+      before: opt('before'),
+    });
+    if (!request) return sendJson(req, res, 400, { code: 'invalid' });
+    try {
+      return sendJson(req, res, 200, await query(request));
+    } catch (err) {
+      return sendQueryError(req, res, err);
+    }
+  }
+
+  // Güvenlik özeti birkaç saniye sürebilir (süreçlerin soketleri, 7 günlük SSH kayıtları); kısa süre saklanır.
+  let securityCache = null;
+  async function handleSecurity(req, res, params) {
+    if (securityCache && params.get('refresh') !== '1' && Date.now() - securityCache.at < 30_000) return sendJson(req, res, 200, securityCache.data);
+    try {
+      const data = { ...(await query({ op: 'security' }, 30_000)), at: Date.now() };
+      securityCache = { data, at: Date.now() };
+      return sendJson(req, res, 200, data);
+    } catch (err) {
+      return sendQueryError(req, res, err);
+    }
   }
 
   // Bekleyen güncellemelerin yapay zekâ özeti; aynı paket listesi için sonuç bellekte tutulur.
@@ -532,6 +608,7 @@ function main() {
       if (pathname === '/api/updates/summary') return handleUpdateSummary(req, res);
       if (pathname === '/api/speedtest') return handleSpeedtest(req, res);
       if (pathname === '/api/chats/delete') return handleChatDelete(req, res);
+      if (pathname === '/api/disk-usage') return handleDiskUsage(req, res);
       return send(req, res, 405, TEXT, 'Method not allowed\n', { Allow: 'GET, HEAD' });
     }
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(req, res, 405, TEXT, 'İzin verilmeyen yöntem\n', { Allow: 'GET, HEAD, POST' });
@@ -602,6 +679,20 @@ function main() {
         idleMinutes: config.terminal.idleMinutes,
       });
     }
+    if (pathname === '/api/disk-usage') {
+      const p = new URL(req.url, 'http://localhost').searchParams.get('path');
+      if (!validScanPath(p)) return sendJson(req, res, 400, { code: 'invalid' });
+      return sendJson(req, res, 200, { available: await queryAvailable(config.query.socket), ...usageStatus(p) });
+    }
+    if (pathname === '/api/logs') return handleLogs(req, res, new URL(req.url, 'http://localhost').searchParams);
+    if (pathname === '/api/logs/sources') {
+      try {
+        return sendJson(req, res, 200, await query({ op: 'log-sources' }));
+      } catch (err) {
+        return sendQueryError(req, res, err);
+      }
+    }
+    if (pathname === '/api/security') return handleSecurity(req, res, new URL(req.url, 'http://localhost').searchParams);
     if (pathname === '/api/services/available') {
       try {
         return sendJson(req, res, 200, { units: await listServiceUnits() });

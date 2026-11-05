@@ -1,0 +1,15 @@
+[Unit]
+Description=Node Stats - salt okunur sorgu soketi (disk kullanımı, günlükler, güvenlik)
+# Yalnızca panel servisinin grubu bağlanabilir; her bağlantı serverhealth-query@.service'i başlatır.
+
+[Socket]
+ListenStream=/run/serverhealth-query.sock
+SocketUser=root
+SocketGroup=serverhealth
+SocketMode=0660
+Accept=yes
+MaxConnections=6
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

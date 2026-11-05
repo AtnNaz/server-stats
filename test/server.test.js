@@ -16,7 +16,7 @@ async function startServer(t) {
   const file = path.join(dir, 'config.json');
   writeFileSync(
     file,
-    JSON.stringify({ host: '127.0.0.1', port, updateCheck: false, auth: { username: 'admin', passwordHash: await hashPassword('dogru-sifre') }, system: { statusFile: path.join(dir, 'system.json') } }),
+    JSON.stringify({ host: '127.0.0.1', port, updateCheck: false, auth: { username: 'admin', passwordHash: await hashPassword('dogru-sifre') }, system: { statusFile: path.join(dir, 'system.json') }, query: { socket: path.join(dir, 'query.sock') } }),
   );
   const env = { ...process.env, STATE_DIRECTORY: path.join(dir, 'state') };
   const child = spawn(process.execPath, ['src/server.js', '--config', file], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -242,4 +242,23 @@ test('sohbetler: oturumla kaydedilir, listelenir, açılır ve silinir', async (
   assert.equal((await post(base, '/api/chats/save', { messages: 'x' }, cookie)).status, 400);
   assert.equal((await post(base, '/api/chats/delete', { id: saved.id }, cookie)).status, 200);
   assert.equal((await fetch(`${base}/api/chats/${saved.id}`, { headers: { Cookie: cookie } })).status, 404);
+});
+
+test('disk alanı, günlükler ve güvenlik: oturum, doğrulama ve yardımcı yokken açıklayıcı hata', async (t) => {
+  const { base } = await startServer(t);
+  assert.equal((await fetch(`${base}/api/logs`)).status, 401);
+  assert.equal((await fetch(`${base}/api/security`)).status, 401);
+  assert.equal((await post(base, '/api/disk-usage', { path: '/' })).status, 401);
+  const cookie = await signIn(base);
+  const get = (p) => fetch(`${base}${p}`, { headers: { Cookie: cookie } });
+  assert.equal((await get('/api/logs?source=unit&name=a;b')).status, 400);
+  assert.equal((await get('/api/logs?source=all&limit=99999')).status, 400);
+  assert.equal((await get('/api/disk-usage?path=/proc')).status, 400);
+  assert.equal((await post(base, '/api/disk-usage', { path: '../etc' }, cookie)).status, 400);
+  for (const res of [await get('/api/logs?source=all&priority=4&since=1h'), await get('/api/logs/sources'), await get('/api/security'), await post(base, '/api/disk-usage', { path: '/' }, cookie)]) {
+    assert.equal(res.status, 409);
+    assert.equal((await res.json()).code, 'query_unavailable');
+  }
+  const status = await (await get('/api/disk-usage?path=/')).json();
+  assert.deepEqual([status.available, status.running, status.result], [false, null, null]);
 });

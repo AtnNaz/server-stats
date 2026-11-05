@@ -192,6 +192,12 @@ else
   echo "Bilgi: python3 yok; panel terminali için gerekli: sudo $(pkg_hint python3)"
 fi
 
+# Disk alanı analizi, günlük görüntüleyici ve güvenlik sayfası: root'a ait, yalnızca okuyan sorgu
+# yardımcısı. Soket yalnızca panelin grubuna açıktır; her bağlantıda kısa ömürlü bir süreç başlar.
+install -m 0644 "$APP_DIR/deploy/serverhealth-query.socket" /etc/systemd/system/serverhealth-query.socket
+sed "s|@NODE@|$NODE_BIN|g" "$APP_DIR/deploy/serverhealth-query@.service" > /etc/systemd/system/serverhealth-query@.service
+chmod 0644 /etc/systemd/system/serverhealth-query@.service
+
 # SMART disk sağlığı: smartctl root ister, bu yüzden ayrı bir zamanlayıcı 10 dakikada bir
 # /var/lib/serverhealth/smart.json dosyasını yazar; panel bu dosyayı yetkisiz okur.
 SMART_SERVICE=/etc/systemd/system/serverhealth-smart.service
@@ -216,6 +222,8 @@ if (( SMART_ENABLED )); then
   systemctl start serverhealth-smart.service || echo "Uyarı: SMART toplanamadı; ayrıntı: journalctl -u serverhealth-smart" >&2
 fi
 systemctl enable --now serverhealth-helper.path serverhealth-helper.timer >/dev/null
+systemctl enable serverhealth-query.socket >/dev/null
+systemctl restart serverhealth-query.socket
 systemctl start serverhealth-helper.service || echo "Uyarı: sistem durumu okunamadı; ayrıntı: journalctl -u serverhealth-helper" >&2
 systemctl enable serverhealth.service >/dev/null
 systemctl restart serverhealth.service

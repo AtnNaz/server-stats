@@ -12,13 +12,16 @@ Geliştirici: [Ali Toprak Naz](https://github.com/AtnNaz) · Lisans: [PolyForm N
 - **Sıcaklık ve fanlar:** işlemci, NVMe diskler, anakart sensörleri ve fan devirleri
 - **Ekran kartı:** NVIDIA kartlarda kullanım, VRAM, sıcaklık, güç ve kartı kullanan süreçler (`nvidia-smi` varsa kendiliğinden açılır)
 - **Docker:** konteynerler ve durumları (isteğe bağlı)
+- **Disk alanı analizi:** Depolama sayfasında bir diski taratıp hangi klasörün ne kadar yer kapladığını kutu haritasında görürsünüz; klasörlere tıklayarak inilir, en büyük dosyalar listelenir (bkz. [Disk alanı, günlükler ve güvenlik](#disk-alanı-günlükler-ve-güvenlik))
+- **Günlükler:** sistem günlüğü, tek bir servis, çekirdek ya da Docker konteyneri kayıtları; önem derecesi, zaman aralığı ve metinle süzülür, canlı izlenebilir
+- **Güvenlik:** dinlenen portlar ve hangi programa/konteynere ait oldukları, kime açık oldukları (bu makine, Tailscale, bütün ağlar), SSH ayarları, başarısız ve başarılı girişler, oturum açabilen kullanıcılar ve bunlardan çıkan öneriler
 - **İnternet hızı:** Ağ sayfasından tek tıkla hız testi (sunucu ile Cloudflare arasında indirme, yükleme, gecikme); isteğe bağlı 1–24 saatte bir otomatik test ve geçmiş grafiği
 - **Güncelleme önizlemesi:** Ayarlar → Güncellemeler'de bekleyen paketlerin listesi (güvenlik güncellemeleri işaretli) ve yerel modelle kısa bir özet
 - **Geçmiş:** işlemci, bellek, sıcaklık, ağ, disk ve ekran kartı değerleri dakikalık olarak 30 gün saklanır; son 24 saat, 7 gün ve 30 günlük grafikler
 - **Terminal:** sunucunun komut satırı tarayıcıda (htop, nano, sudo çalışır); seçtiğiniz kullanıcıyla açılır, varsayılan kapalıdır (bkz. [Terminal](#terminal))
 - **Yapay zekâ:** sunucudaki [Ollama](https://ollama.com) ile sohbet, model indirme/silme ve hız testi; hiçbir şey dışarı gönderilmez. Sohbetler sunucuda saklanır (`/var/lib/serverhealth-panel/chats`), böylece başka bir cihazdan da devam edilir; ekran kartı belleğine sığan modeller önerilir. Model sunucunun anlık durumunu (diskler, SMART, sıcaklık, ekran kartı, servisler, güncellemeler, son rapor) her zaman görür. "Komut çalıştırma" açıksa sorunları araştırmak için kendisi komut da çalıştırabilir (bkz. [Yapay zekâ komutları](#yapay-zekâ-komutları))
 
-Panel sol menüden bölümlere ayrılır (Genel bakış, Geçmiş, Ekran kartı, Depolama, Ağ, Süreçler, Servisler, Terminal, Yapay zekâ, Raporlar); menüdeki rozetler sorunlu bölümleri işaret eder. Birkaç saniyede bir kendini günceller; canlı grafikler son 10 dakikayı, Geçmiş sayfası son 30 günü gösterir. Giriş ekranından oturum açılır; aynı veriler `/api/stats` adresinden JSON olarak da alınabilir (bkz. [API](#api)).
+Panel sol menüden bölümlere ayrılır (Genel bakış, Geçmiş, Ekran kartı, Depolama, Ağ, Süreçler, Servisler, Günlükler, Güvenlik, Terminal, Yapay zekâ, Raporlar); menüdeki rozetler sorunlu bölümleri işaret eder. Birkaç saniyede bir kendini günceller; canlı grafikler son 10 dakikayı, Geçmiş sayfası son 30 günü gösterir. Giriş ekranından oturum açılır; aynı veriler `/api/stats` adresinden JSON olarak da alınabilir (bkz. [API](#api)).
 
 Hiçbir npm paketine ihtiyaç duymaz; yalnızca Node.js'in kendi modüllerini kullanır (terminal ekranı için [xterm.js](https://xtermjs.org) dosyaları `public/vendor` içinde gelir, MIT lisanslı) ve bilgileri doğrudan `/proc`, `/sys` ve `systemctl` üzerinden okur. Kendiliğinden yapılan tek dış bağlantı, iki günde bir GitHub'dan son sürüm numarasını sormaktır; bu istekte sunucuya dair hiçbir bilgi gönderilmez ve `"updateCheck": false` ile kapatılabilir. İnternet hız testi yalnızca siz başlattığınızda ya da Ağ sayfasında otomatik testi açtığınızda Cloudflare'in hız testi sunucusuna (`speed.cloudflare.com`) bağlanır.
 
@@ -90,7 +93,7 @@ Elle güncellemek için `cd ~/server-stats && git pull` ile yeni sürümü indir
 ### Kaldırma
 
 ```bash
-sudo systemctl disable --now serverhealth serverhealth-smart.timer serverhealth-helper.path serverhealth-helper.timer serverhealth-reboot.timer serverhealth-smarttest-short.timer serverhealth-smarttest-long.timer
+sudo systemctl disable --now serverhealth serverhealth-query.socket serverhealth-smart.timer serverhealth-helper.path serverhealth-helper.timer serverhealth-reboot.timer serverhealth-smarttest-short.timer serverhealth-smarttest-long.timer
 sudo rm -rf /opt/serverhealth /etc/systemd/system/serverhealth* /etc/serverhealth /var/lib/serverhealth /var/lib/serverhealth-panel /var/lib/serverhealth-queue /etc/apt/apt.conf.d/52serverhealth
 sudo systemctl daemon-reload
 sudo userdel serverhealth
@@ -169,6 +172,16 @@ Sol menüdeki **Terminal** sayfasından açılır: bir kullanıcı seçip "Termi
 - Terminalde yazdıklarınız (sudo şifresi dahil) ağda panelle aynı yoldan gider. Düz HTTP üzerinde kullanmayın; HTTPS, SSH tüneli ya da Tailscale gibi şifreli bir bağlantı kullanın. Panel şifrelenmemiş bağlantıda uyarı gösterir.
 - Terminal ekranı xterm.js çalışırken stil etiketi eklediği için yalnızca `/terminal` sayfasının güvenlik politikası satır içi stillere izin verir; betikler yine yalnızca panelin kendi dosyalarından yüklenir.
 - Gereksinim: `python3` (Ubuntu ve Debian'da hazır gelir).
+
+## Disk alanı, günlükler ve güvenlik
+
+Bu üç sayfa root yetkisi ister (her klasörü görebilmek, sistem günlüğünü okumak, bir portun hangi programa ait olduğunu bulmak). Panel bunu kendisi yapmaz: kurulum betiği `serverhealth-query.socket` soketini kurar ve systemd, sokete gelen her istek için kısa ömürlü bir `serverhealth-query@` servisi başlatır.
+
+- Sokete yalnızca panel servisinin grubu bağlanabilir. Yardımcı her isteği yeniden doğrular; yapabildikleri sabittir ve hepsi yalnızca okumadır: klasör boyutlarını ölçmek, `journalctl` ile kayıt okumak, Docker konteyner kayıt dosyalarını okumak, `/proc` altından soketlerin sahibi olan süreçleri bulmak, `sshd_config`, `/etc/passwd`, `/etc/group` ve şifre dosyasındaki durum alanını (şifre var/boş/kilitli; hash'in kendisi hiçbir yere gönderilmez) okumak.
+- Servis root çalışır ama yalnızca iki yetkisi vardır: her dosyayı okuyabilmek (`CAP_DAC_READ_SEARCH`) ve başka kullanıcıların süreçlerinin açık soketlerini görebilmek (`CAP_SYS_PTRACE`). Dosya sistemi salt okunurdur, ağ bağlantısı açamaz (`IPAddressDeny=any`), en fazla 200 saniye çalışır.
+- **Disk alanı:** dosyaların içeriği okunmaz, yalnızca adları ve diskte kapladıkları yer. Tarama başka disklere geçmez (bağlı diskler ayrıca listelenir), sabit bağlantıları bir kez sayar ve en fazla 150 saniye sürer. Son 8 tarama 30 dakika panelin belleğinde tutulur.
+- **Günlükler:** Docker konteyner kayıtları `json-file` sürücüsüyle yazılan dosyalardan okunur; panel servisinin `docker` grubunda olması gerekmez. Konteyner kayıtlarında önem derecesi olmadığı için satırdaki `ERROR`, `WARN` gibi sözcüklerden tahmin edilir.
+- **Güvenlik:** öneriler panelde hesaplanır; panel hiçbir ayarı değiştirmez. "Bütün ağlar" yerel ağdaki herkesin, modemde port yönlendirmesi varsa internetin bağlanabileceği anlamına gelir.
 
 ## Yapay zekâ komutları
 
@@ -254,7 +267,7 @@ Let's Encrypt anahtarlarını yalnızca root okuyabildiği için systemd bunlar�
 - `/healthz` adresi şifresizdir ve yalnızca `ok` döndürür; izleme araçları için.
 - **Docker:** Docker soketine erişebilen herkes fiilen root yetkisine sahiptir. `--docker` seçeneği servis kullanıcısını `docker` grubuna ekler. Panel yalnızca konteyner listesini okur, ama uygulamada bir açık bulunursa bu yetki kötüye kullanılabilir. Gerçekten ihtiyacınız varsa açın.
 - Süreç komut satırları bazen parola içerebilir (ör. `mysql -pGizli`). Bunu istemiyorsanız `processes.showCommandLine` değerini `false` yapın.
-- Bir portu hangi sürecin dinlediği gösterilmez; bunun için root yetkisi gerekir.
+- Ağ sayfasındaki port kartı hangi sürecin dinlediğini göstermez. Bu bilgi Güvenlik sayfasında, root'a ait salt okunur sorgu yardımcısı üzerinden gelir (bkz. [Disk alanı, günlükler ve güvenlik](#disk-alanı-günlükler-ve-güvenlik)).
 - **Terminal:** panelden açılan terminal, seçilen kullanıcının yapabildiği her şeyi yapabilir. Panel şifresini bilen biri bu kullanıcının kabuğuna erişir; güçlü bir panel şifresi kullanın, ihtiyacınız yoksa terminali kapalı tutun. Ayrıntılar: [Terminal](#terminal).
 - **Yapay zekâ:** sohbet ve model işlemleri yalnızca bu makinedeki Ollama'ya gider. Sohbetler panelin durum klasöründe yalnızca panel kullanıcısının okuyabileceği dosyalarda (0600) saklanır; komut çıktıları dahildir, sudo şifreleri hiçbir zaman kaydedilmez. En fazla 200 sohbet tutulur, eskiler silinir.
 
@@ -266,6 +279,7 @@ Let's Encrypt anahtarlarını yalnızca root okuyabildiği için systemd bunlar�
 | `Port 8080 başka bir uygulama tarafından kullanılıyor` | `config.json` içinde başka bir `port` seçin |
 | Servisler kartında `systemctl hatası` | Birim adlarını `systemctl status AD` ile kontrol edin |
 | Docker kartında `erişim izni yok` | `sudo ./deploy/install.sh --docker` çalıştırın |
+| Depolama, Günlükler ya da Güvenlik sayfasında `sorgu yardımcısı kurulu değil` | Kurulumu güncelleyin: `sudo ./deploy/install.sh` (ayrıntı: `journalctl -u 'serverhealth-query@*'`) |
 | Bir disk `yanıt vermiyor` | Ağ diski (NFS/CIFS) erişilemiyor; panel diğer verileri göstermeye devam eder |
 
 ## Geliştirme

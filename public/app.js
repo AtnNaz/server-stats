@@ -1228,6 +1228,8 @@ function render(data) {
   if (s.docker) safely(renderDocker, s.docker);
   safely(renderGpuKpi, s.gpu);
   if (s.storage) safely(renderStorage, s.storage, history, capacity);
+  // Disk alanı kartı, disk listesi ilk kez gelince kurulur.
+  if (!usageState.built && currentRoute() === 'depolama') safely(buildUsageCard);
   if (s.sensors) safely(renderSensors, s.sensors, history, capacity, s.storage);
   safely(renderAlerts, s);
   safely(renderBadges, s);
@@ -3335,6 +3337,641 @@ async function loadSpeed() {
   if (currentRoute() === 'ag') speed.timer = setTimeout(loadSpeed, res.data?.running ? 1000 : 30_000);
 }
 
+// ---------- Root sorgu yardımcısı gerektiren sayfalar ----------
+
+// Yardımcı kurulu değilse (eski kurulum) ne yapılacağını söyleyen kutu.
+const queryMissing = () => errorBox(t('query.missing'));
+
+function queryError(res) {
+  if (res.data?.code === 'query_unavailable') return queryMissing();
+  const key = `query.err.${res.data?.code}`;
+  return errorBox(I18N.DICT[I18N.lang][key] ? t(key) : t('query.err.failed'));
+}
+
+// ---------- Disk alanı analizi ----------
+
+const usageState = { root: null, data: null, focus: null, timer: null, pending: null, error: null, built: false, startedAt: null };
+
+// Kutu haritası (squarified treemap): her dikdörtgenin alanı boyutla orantılı, kenar oranları kareye yakın.
+function squarify(items, x, y, w, h) {
+  const out = [];
+  const total = items.reduce((s, i) => s + i.value, 0);
+  if (!total || w <= 0 || h <= 0) return out;
+  const scale = (w * h) / total;
+  const rest = items.map((i) => ({ ...i, area: i.value * scale }));
+  const worst = (row, side) => {
+    const sum = row.reduce((s, r) => s + r.area, 0);
+    const max = Math.max(...row.map((r) => r.area));
+    const min = Math.min(...row.map((r) => r.area));
+    return Math.max((side * side * max) / (sum * sum), (sum * sum) / (side * side * min));
+  };
+  let row = [];
+  while (rest.length) {
+    const side = Math.min(w, h);
+    const next = rest[0];
+    if (!row.length || worst([...row, next], side) <= worst(row, side)) {
+      row.push(rest.shift());
+      continue;
+    }
+    ({ x, y, w, h } = layoutRow(row, x, y, w, h, out));
+    row = [];
+  }
+  if (row.length) layoutRow(row, x, y, w, h, out);
+  return out;
+}
+
+function layoutRow(row, x, y, w, h, out) {
+  const sum = row.reduce((s, r) => s + r.area, 0);
+  if (w >= h) {
+    const rw = sum / h;
+    let cy = y;
+    for (const r of row) {
+      const rh = r.area / rw;
+      out.push({ ...r, x, y: cy, w: rw, h: rh });
+      cy += rh;
+    }
+    return { x: x + rw, y, w: w - rw, h };
+  }
+  const rh = sum / w;
+  let cx = x;
+  for (const r of row) {
+    const rw = r.area / rh;
+    out.push({ ...r, x: cx, y, w: rw, h: rh });
+    cx += rw;
+  }
+  return { x, y: y + rh, w, h: h - rh };
+}
+
+const joinPath = (base, name) => (base === '/' ? `/${name}` : `${base}/${name}`);
+
+// Taranan ağaçta bir yolun düğümü (yol tarama kökünün altında değilse null).
+function usageNode(p) {
+  const d = usageState.data;
+  if (!d) return null;
+  if (p === d.path) return d.tree;
+  const prefix = d.path === '/' ? '/' : `${d.path}/`;
+  if (!p.startsWith(prefix)) return null;
+  let node = d.tree;
+  for (const part of p.slice(prefix.length).split('/')) {
+    node = node.d?.find((c) => c.n === part);
+    if (!node) return null;
+  }
+  return node;
+}
+
+function usageRoots() {
+  const disks = (lastData?.snapshot?.system?.disks ?? []).filter((d) => !d.error);
+  // Disk listesi okunamadıysa en azından kök dizin taranabilsin.
+  return disks.length ? disks.map((d) => [d.mount, `${d.mount} · ${fmtBytes(d.used)}`]) : [['/', '/']];
+}
+
+function buildUsageCard() {
+  if (!lastData?.snapshot) return;
+  const roots = usageRoots();
+  usageState.root ??= roots.find(([m]) => m === '/')?.[0] ?? roots[0][0];
+  const sel = selectEl(roots, usageState.root);
+  sel.setAttribute('aria-label', t('usage.root'));
+  sel.addEventListener('change', () => {
+    usageState.root = sel.value;
+    openUsage(sel.value, false);
+  });
+  const scanBtn = button(t('usage.scan'), 'accent', () => openUsage(usageState.focus ?? usageState.root, true));
+  scanBtn.id = 'usage-scan';
+  fill($('usage-tools'), sel, scanBtn);
+  usageState.built = true;
+  renderUsage();
+}
+
+async function openUsage(p, refresh) {
+  clearTimeout(usageState.timer);
+  usageState.error = null;
+  const node = !refresh && usageNode(p);
+  if (node && (node.d || !node.x)) {
+    usageState.focus = p;
+    return renderUsage();
+  }
+  usageState.pending = p;
+  usageState.startedAt = Date.now();
+  renderUsage();
+  const res = await api('/api/disk-usage', { path: p, refresh });
+  handleUsage(p, res);
+}
+
+function handleUsage(p, res) {
+  if (usageState.pending !== p) return;
+  if (!res.ok && res.status !== 202) {
+    usageState.pending = null;
+    usageState.error = res.data?.code === 'busy' ? errorBox(t('usage.busy')) : queryError(res);
+    return renderUsage();
+  }
+  const d = res.data;
+  if (d.running === p) {
+    usageState.startedAt = d.startedAt ?? usageState.startedAt;
+    renderUsage();
+    usageState.timer = setTimeout(async () => handleUsage(p, await api(`/api/disk-usage?path=${encodeURIComponent(p)}`)), 1500);
+    return;
+  }
+  usageState.pending = null;
+  if (d.error) {
+    usageState.error = queryError({ data: { code: d.error } });
+  } else if (d.result) {
+    usageState.data = { ...d.result, at: d.at };
+    usageState.focus = p;
+  }
+  renderUsage();
+}
+
+function renderUsage() {
+  const body = $('usage-body');
+  const meta = $('usage-meta');
+  const scanBtn = $('usage-scan');
+  if (scanBtn) scanBtn.disabled = Boolean(usageState.pending);
+  if (usageState.pending) {
+    meta.textContent = '';
+    const secs = Math.round((Date.now() - (usageState.startedAt ?? Date.now())) / 1000);
+    fill(body, h('p', { class: 'placeholder usage-wait' }, h('span', { class: 'spin' }), t('usage.scanning', { path: usageState.pending, s: secs })));
+    clearTimeout(usageState.tick);
+    usageState.tick = setTimeout(() => usageState.pending && renderUsage(), 1000);
+    return;
+  }
+  if (usageState.error) {
+    meta.textContent = '';
+    return fill(body, usageState.error);
+  }
+  const d = usageState.data;
+  if (!d) {
+    meta.textContent = '';
+    return fill(body, placeholder(t('usage.intro')));
+  }
+  const focus = usageState.focus ?? d.path;
+  const node = usageNode(focus) ?? d.tree;
+  meta.textContent = [t('usage.scanned', { ago: fmtAgo(d.at) }), t('usage.stats', { files: num0.format(d.files), s: num1.format(d.seconds) })].join(' · ');
+
+  // Yol çubuğu: tarama kökünün üstündeki klasörler yeniden tarama ister.
+  const parts = focus === '/' ? [''] : focus.split('/');
+  const crumbs = parts.map((part, i) => {
+    const p = i === 0 ? '/' : parts.slice(0, i + 1).join('/');
+    const label = i === 0 ? '/' : part;
+    if (p === focus) return h('strong', { class: 'mono' }, label);
+    const b = h('button', { type: 'button', class: 'link-btn mono' }, label);
+    b.addEventListener('click', () => openUsage(p, false));
+    return b;
+  });
+
+  const kids = node.d ?? [];
+  const childSum = kids.reduce((s, c) => s + c.s, 0);
+  const rest = node.s - childSum;
+  const items = [...kids.map((c) => ({ value: c.s, node: c, path: joinPath(focus, c.n) })), ...(rest > node.s * 0.002 ? [{ value: rest, rest: true }] : [])];
+  const box = h('div', { class: 'treemap', role: 'list', 'aria-label': t('usage.map', { path: focus }) });
+  const W = 1000;
+  const H = 420;
+  for (const r of squarify(items.filter((i) => i.value > 0), 0, 0, W, H)) {
+    const pct = (r.value / node.s) * 100;
+    const label = r.rest ? t('usage.rest') : r.node.n;
+    const title = `${r.rest ? label : r.path}\n${fmtBytes(r.value)} · ${fmtPct(pct)}${r.node?.f ? ` · ${t('usage.files', { n: num0.format(r.node.f) })}` : ''}`;
+    const cell = h(
+      r.rest || (!r.node.d && !r.node.x) ? 'div' : 'button',
+      { class: `tm-cell${r.rest ? ' rest' : ''}`, title, role: 'listitem', ...(r.rest || (!r.node.d && !r.node.x) ? {} : { type: 'button' }) },
+      r.w / W > 0.06 && r.h / H > 0.06 ? h('span', { class: 'tm-name' }, label) : null,
+      r.w / W > 0.06 && r.h / H > 0.11 ? h('span', { class: 'tm-size' }, fmtBytes(r.value)) : null,
+    );
+    Object.assign(cell.style, { left: `${(r.x / W) * 100}%`, top: `${(r.y / H) * 100}%`, width: `${(r.w / W) * 100}%`, height: `${(r.h / H) * 100}%` });
+    if (cell.tagName === 'BUTTON') cell.addEventListener('click', () => openUsage(r.path, false));
+    box.append(cell);
+  }
+
+  const rows = kids.map((c) => {
+    const p = joinPath(focus, c.n);
+    const nameEl = c.d || c.x ? h('button', { type: 'button', class: 'link-btn' }, c.n) : h('span', null, c.n);
+    if (c.d || c.x) nameEl.addEventListener('click', () => openUsage(p, false));
+    return h(
+      'tr',
+      null,
+      h('td', { class: 'break' }, nameEl),
+      h('td', { class: 'r' }, fmtBytes(c.s)),
+      h('td', { class: 'usage-bar' }, mini((c.s / node.s) * 100), h('span', { class: 'muted small' }, fmtPct((c.s / node.s) * 100))),
+      h('td', { class: 'r muted' }, num0.format(c.f)),
+    );
+  });
+  if (rest > 0) rows.push(h('tr', null, h('td', { class: 'muted' }, t('usage.rest')), h('td', { class: 'r' }, fmtBytes(rest)), h('td', { class: 'usage-bar' }, mini((rest / node.s) * 100), h('span', { class: 'muted small' }, fmtPct((rest / node.s) * 100))), h('td')));
+
+  const prefix = focus === '/' ? '/' : `${focus}/`;
+  const largest = d.largest.filter((f) => f.path.startsWith(prefix)).slice(0, 15);
+  const mounts = d.mounts.filter((m) => m.startsWith(prefix));
+  const notes = [
+    d.partial ? tag('warn', 'warn', t('usage.partial')) : null,
+    d.errors ? h('span', { class: 'muted small' }, t('usage.errors', { n: num0.format(d.errors) })) : null,
+  ];
+
+  fill(
+    body,
+    h('div', { class: 'usage-head' }, h('nav', { class: 'crumbs', 'aria-label': t('usage.path') }, crumbs[0], crumbs.slice(1).flatMap((c, i) => (i ? [h('span', { class: 'muted' }, '/'), c] : [c]))), h('span', { class: 'usage-total' }, fmtBytes(node.s), d.capacity && focus === d.path ? h('span', { class: 'muted small' }, ` / ${fmtBytes(d.capacity.size)}`) : null), notes),
+    items.length ? box : placeholder(t('usage.empty')),
+    h(
+      'div',
+      { class: 'usage-cols' },
+      kids.length || rest > 0 ? h('div', null, h('h3', { class: 'sub-title' }, t('usage.folders')), table([[t('usage.name')], [t('usage.size'), 'r'], [t('usage.share')], [t('usage.fileCount'), 'r']], rows)) : null,
+      largest.length
+        ? h(
+            'div',
+            null,
+            h('h3', { class: 'sub-title' }, t('usage.largest')),
+            table(
+              [[t('usage.file')], [t('usage.size'), 'r']],
+              largest.map((f) => h('tr', null, h('td', { class: 'mono break', title: f.path }, f.path.slice(prefix.length)), h('td', { class: 'r' }, fmtBytes(f.size)))),
+            ),
+          )
+        : null,
+    ),
+    mounts.length
+      ? h(
+          'p',
+          { class: 'muted small usage-mounts' },
+          t('usage.mounts'),
+          ' ',
+          mounts.map((m, i) => {
+            const b = h('button', { type: 'button', class: 'link-btn mono' }, m);
+            b.addEventListener('click', () => {
+              usageState.root = m;
+              openUsage(m, false);
+            });
+            return [i ? ', ' : '', b];
+          }),
+        )
+      : null,
+  );
+}
+
+function enterStorage() {
+  if (!usageState.built) buildUsageCard();
+}
+
+// ---------- Günlükler ----------
+
+const LOG_PRIORITIES = [
+  [3, 'logs.p.error'],
+  [4, 'logs.p.warning'],
+  [6, 'logs.p.info'],
+  [7, 'logs.p.all'],
+];
+const LOG_SINCE = [
+  ['15m', 'logs.since.15m'],
+  ['1h', 'logs.since.1h'],
+  ['6h', 'logs.since.6h'],
+  ['24h', 'logs.since.24h'],
+  ['7d', 'logs.since.7d'],
+  ['boot', 'logs.since.boot'],
+  ['prevboot', 'logs.since.prevboot'],
+];
+const LOG_LIMIT = 300;
+const MAX_LOG_ROWS = 3000;
+const logState = { built: false, sources: null, source: 'all', priority: 4, since: '1h', search: '', live: false, entries: [], cursor: null, more: false, loading: false, timer: null, seq: 0, el: {} };
+const logTime = new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const logDate = new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'short' });
+
+function logSourceParams() {
+  const [kind, ...rest] = logState.source.split(':');
+  const name = rest.join(':');
+  return kind === 'unit' || kind === 'container' ? { source: kind, name } : { source: kind };
+}
+
+function logUrl(extra = {}) {
+  const params = new URLSearchParams({ ...logSourceParams(), priority: String(logState.priority), since: logState.since, limit: String(LOG_LIMIT), ...(logState.search && { q: logState.search }), ...extra });
+  return `/api/logs?${params}`;
+}
+
+function sourceOptions() {
+  const sel = h('select', { class: 'select', 'aria-label': t('logs.source') });
+  sel.append(h('option', { value: 'all' }, t('logs.src.all')), h('option', { value: 'kernel' }, t('logs.src.kernel')));
+  const s = logState.sources;
+  if (s?.containers?.length) sel.append(h('optgroup', { label: t('logs.src.containers') }, s.containers.map((c) => h('option', { value: `container:${c.name}` }, `${c.name}${c.running ? '' : ` (${t('logs.stopped')})`}`))));
+  if (s?.units?.length) sel.append(h('optgroup', { label: t('logs.src.units') }, s.units.map((u) => h('option', { value: `unit:${u}` }, u.replace(/\.service$/, '')))));
+  // Bağlantıyla gelinen kaynak listede yoksa da seçilebilsin.
+  if (![...sel.options].some((o) => o.value === logState.source)) sel.append(h('option', { value: logState.source }, logState.source.split(':').slice(1).join(':') || logState.source));
+  sel.value = logState.source;
+  sel.addEventListener('change', () => {
+    logState.source = sel.value;
+    setLogHash();
+    reloadLogs();
+  });
+  return sel;
+}
+
+function setLogHash() {
+  const [kind, ...rest] = logState.source.split(':');
+  const target = kind === 'unit' || kind === 'container' ? `#/gunlukler/${kind}/${encodeURIComponent(rest.join(':'))}` : '#/gunlukler';
+  if (window.location.hash !== target) history.replaceState(null, '', target);
+}
+
+function buildLogs() {
+  const el = logState.el;
+  el.source = h('span', null, sourceOptions());
+  const prio = segEl(LOG_PRIORITIES.map(([v, k]) => [v, t(k)]), logState.priority, (v) => {
+    logState.priority = v;
+    reloadLogs();
+  });
+  const since = selectEl(LOG_SINCE.map(([v, k]) => [v, t(k)]), logState.since);
+  since.setAttribute('aria-label', t('logs.range'));
+  since.addEventListener('change', () => {
+    logState.since = since.value;
+    reloadLogs();
+  });
+  const search = inputEl('search', logState.search, { placeholder: t('logs.search'), 'aria-label': t('logs.search'), class: 'logs-search', maxlength: '200' });
+  let debounce = null;
+  search.addEventListener('input', () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => {
+      logState.search = search.value.trim();
+      reloadLogs();
+    }, 450);
+  });
+  const live = switchEl(logState.live, t('logs.live'));
+  live.input.addEventListener('change', () => {
+    logState.live = live.input.checked;
+    scheduleLive();
+  });
+  el.status = h('span', { class: 'muted small', role: 'status' });
+  el.list = h('div', { class: 'log-list', role: 'log', 'aria-live': 'off' });
+  el.more = button(t('logs.older'), null, loadOlder);
+  el.foot = h('div', { class: 'log-foot' }, el.more);
+  fill(
+    $('logs-root'),
+    h('article', { class: 'card span-3' }, h('div', { class: 'logs-toolbar' }, el.source, prio.el, since, search, live.el, el.status), el.list, el.foot),
+  );
+  logState.built = true;
+}
+
+const PRIORITY_CLASS = (p) => (p <= 3 ? 'crit' : p === 4 ? 'warn' : p === 5 ? 'notice' : p >= 7 ? 'debug' : '');
+
+function logRow(e) {
+  const d = new Date(e.t);
+  const today = d.toDateString() === new Date().toDateString();
+  const src = e.src === 'kernel' ? t('logs.src.kernelShort') : e.src.replace(/\.service$/, '');
+  return h(
+    'div',
+    { class: `log-row ${PRIORITY_CLASS(e.p)}` },
+    h('time', { datetime: d.toISOString(), title: d.toLocaleString(locale) }, today ? logTime.format(d) : `${logDate.format(d)} ${logTime.format(d)}`),
+    h('span', { class: 'log-src', title: e.src }, src),
+    h('span', { class: 'log-msg' }, e.msg),
+  );
+}
+
+function renderLogs() {
+  const { list, status, more } = logState.el;
+  if (logState.error) {
+    fill(list, logState.error);
+    status.textContent = '';
+    more.hidden = true;
+    return;
+  }
+  if (!logState.entries.length) {
+    fill(list, placeholder(logState.loading ? t('common.loading') : logState.note === 'no_boot' ? t('logs.noBoot') : t('logs.none')));
+  } else {
+    // En yeni kayıt en üstte.
+    fill(list, logState.entries.slice().reverse().map(logRow));
+  }
+  more.hidden = !logState.more;
+  more.disabled = logState.loading;
+  status.textContent = logState.entries.length ? t('logs.count', { n: num0.format(logState.entries.length) }) : '';
+}
+
+async function reloadLogs() {
+  clearTimeout(logState.timer);
+  const seq = ++logState.seq;
+  Object.assign(logState, { loading: true, error: null, note: null });
+  renderLogs();
+  const res = await api(logUrl());
+  if (seq !== logState.seq) return;
+  logState.loading = false;
+  if (!res.ok) {
+    logState.entries = [];
+    logState.error = queryError(res);
+  } else {
+    Object.assign(logState, { entries: res.data.entries, cursor: res.data.cursor, more: Boolean(res.data.more), note: res.data.note ?? null });
+  }
+  renderLogs();
+  scheduleLive();
+}
+
+async function loadOlder() {
+  const first = logState.entries[0];
+  if (!first?.b) return;
+  const seq = logState.seq;
+  logState.loading = true;
+  renderLogs();
+  const res = await api(logUrl({ before: first.b }));
+  if (seq !== logState.seq) return;
+  logState.loading = false;
+  if (res.ok) {
+    const seen = new Set(logState.entries.map((e) => e.c ?? e.b));
+    const older = res.data.entries.filter((e) => !seen.has(e.c ?? e.b));
+    logState.entries = [...older, ...logState.entries].slice(-MAX_LOG_ROWS);
+    logState.more = Boolean(res.data.more) && older.length > 0;
+  }
+  renderLogs();
+}
+
+function scheduleLive() {
+  clearTimeout(logState.timer);
+  if (!logState.live || currentRoute() !== 'gunlukler' || !logState.cursor) return;
+  logState.timer = setTimeout(pollLive, 3000);
+}
+
+async function pollLive() {
+  const seq = logState.seq;
+  const res = await api(logUrl({ after: logState.cursor }));
+  if (seq !== logState.seq) return;
+  if (res.ok) {
+    if (res.data.entries.length) {
+      logState.entries = [...logState.entries, ...res.data.entries].slice(-MAX_LOG_ROWS);
+      renderLogs();
+    }
+    logState.cursor = res.data.cursor ?? logState.cursor;
+  } else if (res.data?.code === 'bad_cursor') {
+    return reloadLogs();
+  }
+  scheduleLive();
+}
+
+async function enterLogs() {
+  // #/gunlukler/unit/ssh.service ya da #/gunlukler/container/web-app
+  const [, kind, name] = window.location.hash.replace(/^#\/?/, '').split('/');
+  const wanted = (kind === 'unit' || kind === 'container') && name ? `${kind}:${decodeURIComponent(name)}` : null;
+  if (wanted) logState.source = wanted;
+  if (!logState.built) buildLogs();
+  if (!logState.sources) {
+    api('/api/logs/sources').then((res) => {
+      if (!res.ok) return;
+      logState.sources = res.data;
+      fill(logState.el.source, sourceOptions());
+    });
+  } else if (wanted) fill(logState.el.source, sourceOptions());
+  reloadLogs();
+}
+
+function leaveLogs() {
+  clearTimeout(logState.timer);
+}
+
+// ---------- Güvenlik ----------
+
+const secState = { built: false, data: null, loading: false, error: null };
+const SCOPE = {
+  all: ['warn', 'globe', 'sec.scope.all'],
+  specific: ['info', 'target', 'sec.scope.specific'],
+  tailscale: ['ok', 'lock', 'sec.scope.tailscale'],
+  local: ['ok', 'lock', 'sec.scope.local'],
+};
+// Herkese açık olmaması gereken servisler (veritabanları, yönetim arayüzleri).
+const SENSITIVE_PORTS = new Set([2375, 3306, 5432, 5984, 6379, 9200, 11211, 11434, 27017]);
+
+function securityFindings(d) {
+  const out = [];
+  const exposed = d.ports.filter((p) => p.scope === 'all');
+  const firewallOff = d.firewall.ufw !== 'enabled' && !d.firewall.firewalld;
+  const ssh = d.ssh;
+  const sshExposed = ssh && d.ports.some((p) => p.proto === 'tcp' && ssh.ports.includes(String(p.port)) && p.scope === 'all');
+  if (ssh?.permitEmptyPasswords) out.push(['crit', t('sec.f.emptyPw'), t('sec.f.emptyPwHint')]);
+  for (const u of d.users.filter((x) => x.password === 'empty')) out.push(['crit', t('sec.f.userEmpty', { user: u.name }), t('sec.f.userEmptyHint')]);
+  if (ssh && ssh.permitRootLogin === 'yes') out.push(['crit', t('sec.f.rootLogin'), t('sec.f.rootLoginHint')]);
+  for (const p of exposed.filter((x) => SENSITIVE_PORTS.has(x.port))) {
+    const who = p.containers[0] ?? p.processes[0]?.name ?? WELL_KNOWN_PORTS[p.port] ?? '';
+    out.push(['warn', t('sec.f.sensitive', { port: p.port, name: who }), t('sec.f.sensitiveHint')]);
+  }
+  if (ssh?.passwordAuthentication && sshExposed) out.push(['warn', t('sec.f.sshPassword'), t('sec.f.sshPasswordHint')]);
+  if (firewallOff && exposed.length) out.push(['info', t('sec.f.firewall', { n: exposed.length }), t('sec.f.firewallHint')]);
+  if (d.sshLog.last24h >= 20 && d.fail2ban !== 'active') out.push(['warn', t('sec.f.bruteforce', { n: num0.format(d.sshLog.last24h) }), t('sec.f.bruteforceHint')]);
+  if (d.sudoFailures) out.push(['info', t('sec.f.sudo', { n: d.sudoFailures }), t('sec.f.sudoHint')]);
+  if (!out.length) out.push(['ok', t('sec.f.none'), t('sec.f.noneHint')]);
+  return out;
+}
+
+function secCard(titleKey, iconName, ...content) {
+  return h('article', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { class: 'card-title' }, icon(iconName), h('span', null, t(titleKey)))), ...content);
+}
+
+const fmtWhen = (ts) => `${dateTimeFormat.format(new Date(ts))}`;
+
+function renderSecurity() {
+  const root = $('security-root');
+  const refresh = button(t('sec.refresh'), null, () => loadSecurity(true));
+  refresh.disabled = secState.loading;
+  const toolbar = h('div', { class: 'hist-toolbar' }, refresh, h('span', { class: 'muted small' }, secState.loading ? t('common.loading') : secState.data ? t('sec.updated', { ago: fmtAgo(secState.data.at) }) : ''));
+  if (secState.error) return fill(root, toolbar, h('article', { class: 'card' }, secState.error));
+  const d = secState.data;
+  if (!d) return fill(root, toolbar, h('article', { class: 'card' }, placeholder(t('common.loading'))));
+
+  const findings = securityFindings(d);
+  const findingsCard = h(
+    'article',
+    { class: 'card span-3' },
+    h('div', { class: 'card-head' }, h('h2', { class: 'card-title' }, icon('info'), h('span', null, t('sec.findings')))),
+    h(
+      'ul',
+      { class: 'sec-findings' },
+      findings.map(([lvl, title, hint]) => h('li', { class: `alert-row ${lvl}` }, h('span', { class: 'alert-icon' }, icon(lvl === 'info' ? 'info' : lvl)), h('div', { class: 'alert-text' }, h('strong', null, title), h('span', null, hint)))),
+    ),
+  );
+
+  const portsCard = h(
+    'article',
+    { class: 'card span-3' },
+    h('div', { class: 'card-head' }, h('h2', { class: 'card-title' }, icon('globe'), h('span', null, t('sec.ports'))), h('span', { class: 'card-meta' }, t('sec.portsMeta', { n: d.ports.length, open: d.ports.filter((p) => p.scope === 'all').length }))),
+    d.ports.length
+      ? table(
+          [[t('ports.port')], [t('sec.program')], [t('ports.address')], [t('ports.access'), 'r']],
+          d.ports.map((p) => {
+            const [cls, iconName, key] = SCOPE[p.scope];
+            const procs = p.processes.map((x) => `${x.name} (${x.user})`).join(', ');
+            return h(
+              'tr',
+              null,
+              h('td', { class: 'nowrap' }, h('strong', { class: 'num' }, p.port), ' ', h('span', { class: 'muted small' }, `${p.proto.toUpperCase()}${WELL_KNOWN_PORTS[p.port] ? ` · ${WELL_KNOWN_PORTS[p.port]}` : ''}`)),
+              h('td', { class: 'break' }, p.containers.length ? [h('span', { class: 'tag info' }, icon('server'), p.containers.join(', ')), ' '] : null, procs ? h('span', { class: p.containers.length ? 'muted small' : '' }, procs) : p.containers.length ? null : h('span', { class: 'muted' }, '—')),
+              h('td', { class: 'mono break' }, p.addresses.join(', ')),
+              h('td', { class: 'r' }, tag(cls, iconName, t(key))),
+            );
+          }),
+        )
+      : placeholder(t('ports.none')),
+  );
+
+  const ssh = d.ssh;
+  const yesNo = (v, goodWhen) => tag(v === goodWhen ? 'ok' : 'warn', v === goodWhen ? 'ok' : 'warn', t(v ? 'sec.on' : 'sec.off'));
+  const rootTag = (v) => tag(v === 'yes' ? 'crit' : v === 'no' ? 'ok' : 'info', v === 'yes' ? 'crit' : v === 'no' ? 'ok' : 'info', t(`sec.root.${['yes', 'no'].includes(v) ? v : 'key'}`));
+  const sshCard = secCard(
+    'sec.ssh',
+    'key',
+    ssh
+      ? h(
+          'ul',
+          { class: 'list stat-list' },
+          statRow(t('sec.sshPort'), ssh.ports.join(', ')),
+          statRow(t('sec.sshRoot'), rootTag(ssh.permitRootLogin)),
+          statRow(t('sec.sshPassword'), yesNo(ssh.passwordAuthentication, false)),
+          statRow(t('sec.sshKeys'), yesNo(ssh.pubkeyAuthentication, true)),
+          ssh.permitEmptyPasswords ? statRow(t('sec.sshEmpty'), tag('crit', 'crit', t('sec.on'))) : null,
+        )
+      : placeholder(t('sec.noSsh')),
+    d.sshLog.accepted.length
+      ? [
+          h('h3', { class: 'sub-title' }, t('sec.accepted')),
+          table(
+            [[t('sec.when')], [t('sec.user')], [t('sec.from')]],
+            d.sshLog.accepted.slice(0, 8).map((a) => h('tr', null, h('td', { class: 'nowrap muted' }, fmtWhen(a.t)), h('td', null, a.user, ' ', h('span', { class: 'muted small' }, a.count > 1 ? t('sec.times', { n: a.count, method: a.method }) : a.method)), h('td', { class: 'mono' }, a.ip))),
+          ),
+        ]
+      : null,
+  );
+
+  const log = d.sshLog;
+  const maxDay = Math.max(1, ...log.perDay.map((x) => x.count));
+  const attemptsCard = secCard(
+    'sec.attempts',
+    'lock',
+    h('ul', { class: 'list stat-list' }, statRow(t('sec.attempts7d'), num0.format(log.failures)), statRow(t('sec.attempts24h'), num0.format(log.last24h)), log.lastFailure ? statRow(t('sec.lastAttempt'), `${fmtAgo(log.lastFailure.t)} · ${log.lastFailure.user} @ ${log.lastFailure.ip}`) : null),
+    log.perDay.length ? h('div', { class: 'day-bars', 'aria-label': t('sec.perDay') }, log.perDay.map((x) => h('div', { class: 'day-bar', title: `${x.day}: ${num0.format(x.count)}` }, mini((x.count / maxDay) * 100), h('span', { class: 'muted small' }, x.day.slice(5)), h('span', { class: 'small num' }, num0.format(x.count))))) : null,
+    log.topIps.length ? [h('h3', { class: 'sub-title' }, t('sec.topIps')), table([[t('sec.from')], [t('sec.count'), 'r']], log.topIps.map((x) => h('tr', null, h('td', { class: 'mono' }, x.ip), h('td', { class: 'r' }, num0.format(x.count)))))] : null,
+    log.topUsers.length ? [h('h3', { class: 'sub-title' }, t('sec.topUsers')), h('p', { class: 'muted small' }, log.topUsers.map((x) => `${x.user} (${x.count})`).join(', '))] : null,
+    !log.failures ? placeholder(t('sec.noAttempts')) : null,
+  );
+
+  const pw = { set: ['ok', 'sec.pw.set'], locked: ['info', 'sec.pw.locked'], empty: ['crit', 'sec.pw.empty'], unknown: ['', 'sec.pw.unknown'] };
+  const usersCard = secCard(
+    'sec.users',
+    'key',
+    table(
+      [[t('sec.user')], [t('sec.password')], [t('sec.keyCount'), 'r']],
+      d.users.map((u) => h('tr', null, h('td', null, h('strong', null, u.name), ' ', u.admin ? h('span', { class: 'tag' }, t('sec.admin')) : null), h('td', null, tag(pw[u.password][0], pw[u.password][0] || 'info', t(pw[u.password][1]))), h('td', { class: 'r' }, num0.format(u.keys)))),
+    ),
+    h(
+      'ul',
+      { class: 'list stat-list sec-protect' },
+      statRow(t('sec.firewall'), d.firewall.ufw === 'enabled' || d.firewall.firewalld ? tag('ok', 'ok', d.firewall.firewalld ? 'firewalld' : 'ufw') : tag('info', 'info', t(d.firewall.ufw === 'missing' ? 'sec.fw.missing' : 'sec.fw.off'))),
+      statRow('fail2ban', tag(d.fail2ban === 'active' ? 'ok' : 'info', d.fail2ban === 'active' ? 'ok' : 'info', t(`sec.f2b.${d.fail2ban}`))),
+    ),
+  );
+
+  fill(root, toolbar, h('div', { class: 'grid' }, findingsCard, portsCard, sshCard, attemptsCard, usersCard));
+}
+
+async function loadSecurity(refresh = false) {
+  secState.loading = true;
+  renderSecurity();
+  const res = await api(`/api/security${refresh ? '?refresh=1' : ''}`);
+  secState.loading = false;
+  if (res.ok) {
+    secState.data = res.data;
+    secState.error = null;
+  } else secState.error = queryError(res);
+  renderSecurity();
+}
+
+function enterSecurity() {
+  if (!secState.data || Date.now() - secState.data.at > 60_000) loadSecurity();
+  else renderSecurity();
+}
+
 // ---------- Bölümler ve sol menü ----------
 
 const ROUTES = {
@@ -3349,6 +3986,8 @@ const ROUTES = {
   terminal: t('nav.terminal'),
   'yapay-zeka': t('nav.ai'),
   raporlar: t('nav.reports'),
+  gunlukler: t('nav.logs'),
+  guvenlik: t('nav.security'),
   ayarlar: t('nav.settings'),
 };
 let hostName = null;
@@ -3398,6 +4037,10 @@ function applyRoute() {
   else leaveAi();
   if (route === 'terminal') enterTerminal();
   else leaveTerminal();
+  if (route === 'depolama') enterStorage();
+  if (route === 'gunlukler') enterLogs();
+  else leaveLogs();
+  if (route === 'guvenlik') enterSecurity();
   window.scrollTo(0, 0);
   // Gizliyken genişliği sıfır olan grafikler görünür olunca yeniden çizilir.
   requestAnimationFrame(redrawCharts);

@@ -1,0 +1,37 @@
+[Unit]
+Description=Node Stats - salt okunur sorgu
+CollectMode=inactive-or-failed
+
+[Service]
+# Panelin isteğini doğrulayıp yalnızca okur: klasör boyutları (dosya içeriği değil), sistem ve
+# konteyner günlükleri, dinlenen portların sahibi olan süreçler, SSH ayarları.
+# Root çalışır ama yalnızca iki yetkisi vardır: her dosyayı okuyabilmek (CAP_DAC_READ_SEARCH) ve
+# başka kullanıcıların süreçlerinin açık soketlerini görebilmek (CAP_SYS_PTRACE).
+ExecStart=@NODE@ /opt/serverhealth/bin/serverhealth-query.js
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+RuntimeMaxSec=200
+Nice=10
+IOSchedulingClass=idle
+
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SYS_PTRACE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+# Dinlenen portlar bu makinenin ağ ad alanından okunur; ağa hiçbir bağlantı açılamaz.
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
