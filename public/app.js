@@ -4177,7 +4177,7 @@ function renderBackups() {
               h('td', { class: 'r' }, r.releases != null ? num0.format(r.releases) : '—'),
               h('td', { class: 'r' }, r.issues != null ? num0.format(r.issues) : '—'),
               h('td', { class: 'r' }, r.size != null ? fmtBytes(r.size) : '—'),
-              h('td', { class: 'r' }, r.ok ? tag('ok', 'ok', t('bk.ok')) : h('span', { title: (r.errors ?? []).join('\n') }, tag('crit', 'crit', t('bk.failed')))),
+              h('td', { class: 'r' }, r.ok ? h('span', { title: r.skipped ? t('bk.unchangedHint') : '' }, tag('ok', 'ok', t(r.skipped ? 'bk.unchanged' : 'bk.ok'))) : h('span', { title: (r.errors ?? []).join('\n') }, tag('crit', 'crit', t('bk.failed')))),
             ),
           ),
         )

@@ -352,10 +352,14 @@ export function createGithubBackup({ config, token = '', stateDir, fetchImpl = f
     await mkdir(base, { recursive: true });
     const result = { id: repo.id, name: repo.full_name, path: rel, private: repo.private, fork: repo.fork, archived: repo.archived, deletedOnGithub: null, ok: true, errors: [] };
 
-    const code = await mirror(repo.clone_url, path.join(base, 'kod.git'));
+    // GitHub son push zamanını bildirir: son başarılı yedekten beri push yoksa repo yeniden çekilmez.
+    // (Pazar günkü tam doğrulamada yine de denetlenir.)
+    const kod = path.join(base, 'kod.git');
+    const unchanged = !full && repo.pushed_at && prev?.last?.ok && prev.last.pushedAt === repo.pushed_at && (await exists(kod));
+    const code = unchanged ? { changed: false, forced: 0, skipped: true } : await mirror(repo.clone_url, kod);
     if (code.missing) throw fail('git_clone', { detail: 'repository not found' });
-    if (code.changed || full) await verify(path.join(base, 'kod.git'), full);
-    Object.assign(result, await gitStats(path.join(base, 'kod.git')), { forcedNow: code.forced });
+    if (code.changed || full) await verify(kod, full);
+    Object.assign(result, await gitStats(kod), { forcedNow: code.forced, pushedAt: repo.pushed_at ?? null, skipped: Boolean(code.skipped) });
 
     if (config.wiki && repo.has_wiki) {
       try {

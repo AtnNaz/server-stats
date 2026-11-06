@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync, statSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createGithubBackup, safeName, nextLink } from '../src/github-backup.js';
+import { createGithubBackup, safeName, nextLink, runGit } from '../src/github-backup.js';
 import { createHelper } from '../bin/serverhealth-helper.js';
 import { validateRequest, validateGithubBackup, validBackupDir } from '../src/system-settings.js';
 
@@ -116,6 +116,23 @@ test('GitHub yedeği: ayna, release dosyası, issue/PR; force-push, silinen bran
   assert.equal(s.totals.repos, 2);
   assert.ok(calls.every((c) => c.auth === null)); // token yokken yetki başlığı gönderilmez
 
+  // 1b. push yoksa repo yeniden çekilmez (git fetch çalışmaz)
+  const fetches = [];
+  const spy = async (args, opts) => {
+    if (args[0] === 'fetch' || args[0] === 'clone') fetches.push(opts?.cwd ?? args.at(-1));
+    return runGit(args, opts);
+  };
+  world.repos = world.repos.map((r) => ({ ...r, pushed_at: '2026-11-01T00:00:00Z' }));
+  clock += 3600_000;
+  await createGithubBackup({ config: { username: 'deneme', dir: root, forks: true, issues: true, wiki: true }, stateDir, fetchImpl, git: spy, now: () => clock }).run(); // pushed_at ilk kez kaydedilir
+  fetches.length = 0;
+  clock += 3600_000;
+  s = await createGithubBackup({ config: { username: 'deneme', dir: root, forks: true, issues: true, wiki: true }, stateDir, fetchImpl, git: spy, now: () => clock }).run();
+  assert.equal(s.ok, true);
+  assert.deepEqual(fetches.filter((c) => c.endsWith('kod.git')), []);
+  assert.ok(s.repos.every((r) => r.skipped));
+  world.repos = world.repos.map((r) => ({ ...r, pushed_at: '2026-11-02T00:00:00Z' })); // yeni push: tekrar çekilir
+
   // 2. force-push, branch silme, release silme, repo kaldırılması
   const old = sh(work, 'rev-parse', 'main');
   writeFileSync(path.join(work, 'a.txt'), '2');
@@ -146,6 +163,7 @@ test('GitHub yedeği: ayna, release dosyası, issue/PR; force-push, silinen bran
   sh(work, 'add', '.');
   sh(work, 'commit', '-qm', 'yeni');
   sh(work, 'push', '-q', 'origin', 'main');
+  world.repos = world.repos.map((r) => ({ ...r, pushed_at: '2026-11-03T00:00:00Z' }));
   clock += 86_400_000;
   s = await make().run();
   assert.equal(s.ok, false);
@@ -155,7 +173,7 @@ test('GitHub yedeği: ayna, release dosyası, issue/PR; force-push, silinen bran
   assert.ok(s.lastOk); // önceki başarılı yedek zamanı korunur
 
   const runs = JSON.parse(readFileSync(path.join(stateDir, 'runs.json'), 'utf8'));
-  assert.deepEqual(runs.map((r) => r.ok), [true, true, false]);
+  assert.deepEqual(runs.map((r) => r.ok), [true, true, true, true, false]);
 });
 
 test('GitHub yedeği: bozuk release dosyası reddedilir, klasör yoksa hiçbir şey yazılmaz, kullanıcı yoksa açık hata', async (t) => {
