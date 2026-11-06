@@ -5,12 +5,52 @@ const MAX_GROUPS = 30;
 const MAX_SAMPLE = 200;
 const MAX_LIST = 10;
 
+// Adreslerde sunucu adı ve yol korunur (rapor hangi servise bağlanılamadığını göstersin); sorgu
+// dizesi ve token'a benzeyen uzun yol parçaları gizlenir.
+function redactUrl(url) {
+  const m = /^([a-z][a-z0-9+.-]*:\/\/)([^/?#\s]*)([^?#\s]*)(.*)$/i.exec(url);
+  if (!m) return '<gizli>';
+  const host = m[2].replace(/^[^@]*@/, '<gizli>@');
+  const pathPart = m[3]
+    .split('/')
+    .map((seg) => (/^[A-Za-z0-9+_=-]{24,}$/.test(seg) ? '<gizli>' : seg))
+    .join('/');
+  return `${m[1]}${host}${pathPart}${m[4] ? (m[4].startsWith('#') ? '' : '?<gizli>') : ''}`;
+}
+
 // Kayıtlarda geçebilecek parola, token gibi değerler rapora ve modele gitmeden maskelenir.
 export function redact(text) {
+  const urls = [];
   return String(text)
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi, (u) => `\u0000${urls.push(redactUrl(u)) - 1}\u0000`)
     .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/g, '$1 <gizli>')
-    .replace(/\b(password|passwd|pwd|pass|token|secret|api[_-]?key|authorization|cookie)(\s*[=:]\s*)("[^"]*"|'[^']*'|(?!(?:Bearer|Basic)\b)\S+)/gi, '$1$2<gizli>')
-    .replace(/\b[A-Za-z0-9+/_-]{40,}={0,2}/g, '<gizli>');
+    .replace(/\b(password|passwd|pwd|pass|token|secret|api[_-]?key|authorization|cookie)(\s*[=:]\s*)("[^"]*"|'[^']*'|(?!(?:Bearer|Basic)\b)[^\s\u0000]+)/gi, '$1$2<gizli>')
+    .replace(/\b[A-Za-z0-9+/_-]{40,}={0,2}/g, '<gizli>')
+    .replace(/\u0000(\d+)\u0000/g, (_, i) => urls[Number(i)]);
+}
+
+// Açılış ve kapanış pencereleri: bu sürede görülen ağ zaman aşımı, durdurulan servis gibi olaylar
+// çoğunlukla zararsızdır; model bunu bilsin diye olaylar işaretlenir.
+const BOOT_WINDOW_MS = 3 * 60_000;
+const SHUTDOWN_WINDOW_MS = 2 * 60_000;
+export function bootContext(time, boots = []) {
+  for (const b of boots) {
+    if (time >= b.start && time <= b.start + BOOT_WINDOW_MS) return 'boot';
+    if (b.end && time <= b.end && time >= b.end - SHUTDOWN_WINDOW_MS) return 'shutdown';
+  }
+  return null;
+}
+
+// journalctl --list-boots -o json → [{ start, end }]; süren açılışın sonu yoktur.
+export function parseBoots(text, now = Date.now()) {
+  try {
+    const list = JSON.parse(text);
+    return list
+      .map((b, i) => ({ start: Math.round(Number(b.first_entry) / 1000), end: i === list.length - 1 ? null : Math.round(Number(b.last_entry) / 1000) }))
+      .filter((b) => Number.isFinite(b.start) && b.start > now - 8 * 86_400_000);
+  } catch {
+    return [];
+  }
 }
 
 // Aynı türden mesajlar tek grupta toplansın diye değişen kısımlar ayıklanır.
@@ -41,7 +81,7 @@ const top = (map, n = MAX_LIST) =>
 const bump = (map, key) => map.set(key, (map.get(key) ?? 0) + 1);
 
 // journalctl -o json satırlarından kesin rakamlar. Model bu sayıları değiştiremez.
-export function analyzeJournal(entries) {
+export function analyzeJournal(entries, { boots: bootList = [] } = {}) {
   const totals = { lines: 0, warnings: 0, errors: 0 };
   const sshFailIps = new Map();
   const sshFailUsers = new Map();
@@ -88,7 +128,14 @@ export function analyzeJournal(entries) {
     let m = /Out of memory: Killed process \d+ \(([^)]+)\)/.exec(msg);
     if (m) bump(oom, m[1]);
     m = /^(\S+\.service): Failed with result/.exec(msg);
-    if (m && ident === 'systemd') bump(serviceFailures, m[1]);
+    if (m && ident === 'systemd') {
+      const f = serviceFailures.get(m[1]) ?? { count: 0, duringBoot: 0, duringShutdown: 0 };
+      f.count++;
+      const ctx = bootContext(time, bootList);
+      if (ctx === 'boot') f.duringBoot++;
+      if (ctx === 'shutdown') f.duringShutdown++;
+      serviceFailures.set(m[1], f);
+    }
     if (ident === 'kernel' && /I\/O error|blk_update_request|Buffer I\/O error|EXT4-fs error|XFS \(.*\): .*error|nvme\S* .*(?:timeout|reset)|ata\d+(?:\.\d+)?: .*(?:error|failed)/i.test(msg)) {
       bump(diskErrors, normalizeMessage(msg));
     }
@@ -97,12 +144,15 @@ export function analyzeJournal(entries) {
     if (prio <= 4) {
       const key = `${unit}\u0000${normalizeMessage(msg)}`;
       const g = groups.get(key);
+      const ctx = bootContext(time, bootList);
       if (g) {
         g.count++;
         g.priority = Math.min(g.priority, prio);
         if (time) g.last = Math.max(g.last, time);
+        if (ctx === 'boot') g.duringBoot++;
+        if (ctx === 'shutdown') g.duringShutdown++;
       } else {
-        groups.set(key, { unit, priority: prio, count: 1, first: time, last: time, sample: redact(msg).slice(0, MAX_SAMPLE) });
+        groups.set(key, { unit, priority: prio, count: 1, first: time, last: time, duringBoot: ctx === 'boot' ? 1 : 0, duringShutdown: ctx === 'shutdown' ? 1 : 0, sample: redact(msg).slice(0, MAX_SAMPLE) });
       }
     }
   }
@@ -118,9 +168,13 @@ export function analyzeJournal(entries) {
     },
     sudoFailures,
     oomKills: top(oom).map(({ key, count }) => ({ process: key, count })),
-    serviceFailures: top(serviceFailures).map(({ key, count }) => ({ unit: key, count })),
+    serviceFailures: [...serviceFailures.entries()]
+      .sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]))
+      .slice(0, MAX_LIST)
+      .map(([unit, f]) => ({ unit, ...f })),
     diskErrors: top(diskErrors).map(({ key, count }) => ({ message: key, count })),
     boots,
+    bootTimes: bootList.filter((b) => b.start >= from - SHUTDOWN_WINDOW_MS || (b.end && b.end >= from)).map((b) => ({ start: b.start, end: b.end })),
     groups: [...groups.values()]
       .sort((a, b) => a.priority - b.priority || b.count - a.count)
       .slice(0, MAX_GROUPS)
@@ -163,8 +217,11 @@ const PROMPTS = {
     '- Bir olayın şu an sürdüğünü varsayma. count, first ve last alanlarına bak: az sayıda ve kısa sürede bitmiş olaylar geçmişte kalmıştır. boots sıfırdan büyükse sunucu bu dönemde açılmıştır.',
     '- Açılış sırasında birkaç kez görülen zaman aşımları (ör. systemd-networkd-wait-online), USB tanıma hataları ve çekirdeğin donanım bildirimleri genellikle zararsızdır; tekrar etmiyorsa önemsiz say ya da hiç yazma.',
     '- Birkaç başarısız sudo denemesi çoğu zaman yöneticinin kendi hatasıdır. SSH tarafında ise başarısız denemelerin sayısına ve kaynak sayısına bak.',
-    '- critical yalnızca acil durumlar içindir: veri kaybı riski (ör. okunamayan disk sektörleri, SMART hatası), sürekli çöken servisler, bellek yetmediği için öldürülen süreçler ya da yoğun saldırı. Diğer konular warning ya da info olur.',
-    '- Öneriler ölçülü, somut ve uygulanabilir olsun; gereğinden ağır önlem önerme. Disk sorunlarında önce yedek almayı ve SMART izlemeyi öner.',
+    '- duringBoot ve duringShutdown, bir olayın kaçının sunucu açılırken (ilk 3 dakika) ya da kapanırken (son 2 dakika) olduğunu gösterir. Tamamı bu sürelerde olan ağ zaman aşımları, durdurulan ya da yeniden başlatılan servisler normaldir: ya hiç yazma ya da info olarak "açılış/kapanış sırasında" diye belirt. bootTimes açılış ve kapanış zamanlarıdır.',
+    '- disks her fiziksel diski anlatır: role "system" işletim sisteminin diski, "data" yalnızca veri diski, "unused" bağlı olmayan disktir. counters SMART sayaçlarıdır (reallocated: yedek alana taşınan, pending: okunamayan, offlineUncorrectable ve reportedUncorrect: düzeltilemeyen sektörler, mediaErrors: NVMe ortam hatası). trend: "increasing" son günlerde arttı, "stable" stableSince tarihinden beri değişmedi, "new" henüz geçmiş yok demektir.',
+    '- critical yalnızca acil durumlar içindir: sistem diskinde bozuk sektör, sayaçları artan (increasing) ya da SMART testi geçemeyen (smartPassed false) bir disk, sürekli çöken önemli servisler, bellek yetmediği için öldürülen süreçler ya da yoğun saldırı. Bir veri diskinde sabit (stable) ya da geçmişi henüz olmayan (new) bozuk sektörler warning olur: diskin yıprandığını söyle, önemli veri tutulmamasını ve değişimi izlemeyi öner; "acil", "sunucuyu durdurun" deme. Diğer konular warning ya da info olur.',
+    '- Kayıtlardaki <gizli> gizlenmiş bir değerdir (parola, token); bunu bir sorun olarak yorumlama.',
+    '- Öneriler ölçülü, somut ve uygulanabilir olsun; gereğinden ağır önlem önerme.',
     '- En fazla 6 bulgu yaz, en önemliden başla. Her bulguda kısa bir başlık, önem (info, warning ya da critical), veriden kanıt (sayı ve servis adıyla) ve öneri olsun.',
     '- status: her şey yolundaysa good, ilgilenilmesi gereken bir şey varsa attention, acil bir sorun varsa critical.',
     '- summary: 1-3 cümlelik, sakin ve doğru bir genel durum.',
@@ -179,8 +236,11 @@ const PROMPTS = {
     '- Do not assume an event is still ongoing. Look at count, first and last: a few events that ended quickly are in the past. If boots is above zero, the server started during this period.',
     '- A few timeouts during boot (e.g. systemd-networkd-wait-online), USB enumeration errors and kernel hardware notices are usually harmless; if they do not repeat, treat them as unimportant or omit them.',
     '- A few failed sudo attempts are usually the administrator\'s own typos. For SSH, look at the number of failed attempts and of distinct sources.',
-    '- Use critical only for urgent issues: data-loss risk (e.g. unreadable disk sectors, SMART failure), services that keep crashing, processes killed for lack of memory, or a heavy attack. Other topics are warning or info.',
-    '- Recommendations must be measured, concrete and actionable; do not suggest heavier action than needed. For disk problems, suggest backing up and watching SMART first.',
+    '- duringBoot and duringShutdown tell how many occurrences happened while the server was starting (first 3 minutes) or shutting down (last 2 minutes). Network timeouts and stopped or restarted services that all fall in these windows are normal: omit them or mention them as info "during boot/shutdown". bootTimes lists the boot and shutdown times.',
+    '- disks describes each physical disk: role "system" is the operating-system disk, "data" a data-only disk, "unused" a disk that is not mounted. counters are SMART counters (reallocated: remapped, pending: unreadable, offlineUncorrectable and reportedUncorrect: uncorrectable sectors, mediaErrors: NVMe media errors). trend: "increasing" grew recently, "stable" unchanged since stableSince, "new" means no history yet.',
+    '- Use critical only for urgent issues: bad sectors on the system disk, a disk whose counters are increasing or whose SMART test fails (smartPassed false), important services that keep crashing, processes killed for lack of memory, or a heavy attack. Stable or new bad-sector counts on a data disk are a warning: say the disk is wearing out, suggest not keeping important data on it and watching the counts; do not say "urgent" or "stop the server". Other topics are warning or info.',
+    '- <gizli> in log text marks a masked value (password, token); do not treat it as a problem.',
+    '- Recommendations must be measured, concrete and actionable; do not suggest heavier action than needed.',
     '- Write at most 6 findings, most important first, each with a short title, a severity (info, warning or critical), evidence from the data (with counts and service names) and a recommendation.',
     '- status: good if all is well, attention if something needs a look, critical if there is an urgent problem.',
     '- summary: a calm, accurate 1-3 sentence overview.',

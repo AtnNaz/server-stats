@@ -160,6 +160,9 @@ Oturum yoksa `/api/stats` 401 döndürür; sayfa istekleri ise giriş ekranına 
 Sunucuda [Ollama](https://ollama.com) kuruluysa panel her gün son 24 saatin sistem kayıtlarını özetleyip yerel bir modele yorumlatabilir. Ayarlar → Günlük rapor'dan açılır; saat ve model (Ollama'da yüklü modeller listelenir) oradan seçilir. Raporlar sol menüdeki **Raporlar** sayfasında 30 gün saklanır; "Şimdi oluştur" ile istendiğinde de hazırlanır.
 
 - Rakamlar (başarısız SSH ve sudo girişleri, çöken servisler, bellek yetmediği için kapatılan süreçler, disk hataları, en sık uyarılar) kodla hesaplanır; model yalnızca bu özeti yorumlar ve öneri yazar. 3-4B boyutunda bir model yeterlidir.
+- Modele her diskin rolü (sistem diski, veri diski, kullanılmayan disk), SMART sayaçları (taşınan, okunamayan ve düzeltilemeyen sektörler, NVMe ortam hataları) ve bu sayaçların günler içindeki değişimi de verilir; böylece sabit kalan bir veri diski uyarısı acil durum gibi gösterilmez. Sayaç geçmişi `/var/lib/serverhealth/reports/smart-history.json` dosyasında tutulur.
+- Sunucu açılırken (ilk 3 dakika) ya da kapanırken (son 2 dakika) görülen olaylar ayrıca işaretlenir; bu sürelerdeki ağ zaman aşımları ve durdurulan servisler normal sayılır.
+- Kayıtlardaki adreslerde sunucu adı ve yol korunur, sorgu dizesi ve token'a benzeyen parçalar gizlenir.
 - Kayıtlar sunucudan dışarı çıkmaz: rapor servisi ağda yalnızca bu makineye bağlanabilir (`IPAddressDeny=any`) ve Ollama adresi yalnızca `127.0.0.1`/`localhost` olabilir. Parola ve token benzeri değerler maskelenir.
 - Kayıt metinleri modele talimat olarak değil veri olarak verilir; modelin hiçbir yetkisi yoktur ve çıktısı panelde düz metin olarak gösterilir. Küçük modeller yanılabilir; önemli kararlardan önce rakamlara bakın.
 - Ollama yoksa ya da yanıt vermezse rapor yine hazırlanır, yalnızca rakamlardan oluşur.
