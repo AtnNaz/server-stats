@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { analyzeJournal, normalizeMessage, redact, validateAi, isLoopbackUrl, askOllama, AI_SCHEMA, bootContext, parseBoots } from '../src/report.js';
-import { buildReport, parseFailedUnits, extraFacts, diskFacts, smartCounters } from '../bin/serverhealth-report.js';
+import { buildReport, parseFailedUnits, extraFacts, diskFacts, smartCounters, assessDisk } from '../bin/serverhealth-report.js';
 
 const T = 1_700_000_000_000_000; // journald mikrosaniye
 const e = (ident, msg, prio = 6, unit = null, dt = 0) => ({ SYSLOG_IDENTIFIER: ident, MESSAGE: msg, PRIORITY: String(prio), _SYSTEMD_UNIT: unit, __REALTIME_TIMESTAMP: String(T + dt * 1_000_000) });
@@ -31,7 +31,8 @@ test('kayıtlardan kesin rakamlar çıkarılır, aynı mesajlar gruplanır', () 
   assert.equal(f.ssh.accepted[0].login, 'ali @ 192.0.2.10 (publickey)');
   assert.equal(f.sudoFailures, 1);
   assert.deepEqual(f.oomKills, [{ process: 'python3', count: 1 }]);
-  assert.deepEqual(f.serviceFailures, [{ unit: 'ollama.service', count: 1, duringBoot: 0, duringShutdown: 0 }]);
+  assert.equal(f.serviceFailures.length, 1);
+  assert.deepEqual({ ...f.serviceFailures[0], last: undefined }, { unit: 'ollama.service', count: 1, duringBoot: 0, duringShutdown: 0, last: undefined });
   assert.equal(f.diskErrors.length, 1);
   assert.equal(f.boots, 1);
   const nginx = f.groups.find((g) => g.unit === 'nginx.service');
@@ -130,7 +131,7 @@ test('açılış ve kapanış sırasında olan olaylar işaretlenir', () => {
     ],
     { boots },
   );
-  assert.deepEqual(f.serviceFailures, [{ unit: 'x.service', count: 1, duringBoot: 0, duringShutdown: 1 }]);
+  assert.deepEqual(f.serviceFailures, [{ unit: 'x.service', count: 1, duringBoot: 0, duringShutdown: 1, last: 1_100_000_000 - 10_000 }]);
   assert.equal(f.groups.find((g) => g.unit === 'apt').duringBoot, 1);
 });
 
@@ -153,10 +154,19 @@ test('disk bilgisi: rol, SMART sayaçları ve günler içindeki değişim', () =
   });
   let r = diskFacts(smart(2), lsblk, {}, '2026-11-06');
   assert.deepEqual(r.disks.map((d) => [d.device, d.role, d.trend]), [['sda', 'data', 'new'], ['nvme1n1', 'system', null], ['nvme0n1', 'unused', null]]);
+  assert.deepEqual(r.disks.map((d) => d.assessment), [{ level: 'warning', reason: 'data_disk_sectors_first_seen' }, null, null]);
   r = diskFacts(smart(2), lsblk, r.history, '2026-11-07');
   assert.deepEqual([r.disks[0].trend, r.disks[0].stableSince], ['stable', '2026-11-06']);
   r = diskFacts(smart(5), lsblk, r.history, '2026-11-08');
   assert.equal(r.disks[0].trend, 'increasing');
+  assert.equal(r.disks[0].assessment.level, 'critical');
   assert.deepEqual(r.disks[0].changes.pending, { from: 2, to: 5 });
   assert.equal(r.history.S1.length, 3);
+});
+
+test('disk önemi kodla belirlenir', () => {
+  assert.deepEqual(assessDisk({ smartPassed: false, bad: false, role: 'data', trend: null }), { level: 'critical', reason: 'smart_failed' });
+  assert.deepEqual(assessDisk({ smartPassed: true, bad: true, role: 'system', trend: 'stable' }), { level: 'critical', reason: 'system_disk_sectors' });
+  assert.deepEqual(assessDisk({ smartPassed: true, bad: true, role: 'data', trend: 'stable' }), { level: 'warning', reason: 'data_disk_sectors_stable' });
+  assert.equal(assessDisk({ smartPassed: true, bad: false, role: 'data', trend: null }), null);
 });

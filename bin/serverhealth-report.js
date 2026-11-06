@@ -107,20 +107,32 @@ export function diskFacts(smart, lsblk, history = {}, date) {
       if (old7 && Number.isFinite(old7[k]) && v !== old7[k]) changes[k] = { from: old7[k], to: v };
     }
     const bad = Object.values(counters).some((v) => v > 0);
+    const role = points.some((m) => SYSTEM_MOUNTS.includes(m)) ? 'system' : points.length ? 'data' : 'unused';
+    const trend = !bad ? null : !first ? 'new' : Object.keys(changes).length ? 'increasing' : 'stable';
     disks.push({
       device: block,
       model: d.data.model_name ?? null,
-      role: points.some((m) => SYSTEM_MOUNTS.includes(m)) ? 'system' : points.length ? 'data' : 'unused',
+      role,
       mounts: points.slice(0, 6),
       smartPassed: d.data.smart_status?.passed ?? null,
       counters,
       // Eğilim: geçmiş yoksa "new"; son 7 günde değişim varsa "increasing"; yoksa ilk kayıttan beri sabit.
-      trend: !bad ? null : !first ? 'new' : Object.keys(changes).length ? 'increasing' : 'stable',
+      trend,
       stableSince: bad && first ? stableSince : null,
       changes,
+      assessment: assessDisk({ smartPassed: d.data.smart_status?.passed, bad, role, trend }),
     });
   }
   return { disks, history: nextHistory };
+}
+
+// Diskin önemi kodla belirlenir; model bunu değiştirmez (küçük modeller ham sayılardan abartılı sonuç çıkarır).
+export function assessDisk({ smartPassed, bad, role, trend }) {
+  if (smartPassed === false) return { level: 'critical', reason: 'smart_failed' };
+  if (!bad) return null;
+  if (role === 'system') return { level: 'critical', reason: 'system_disk_sectors' };
+  if (trend === 'increasing') return { level: 'critical', reason: 'sectors_increasing' };
+  return { level: 'warning', reason: trend === 'stable' ? 'data_disk_sectors_stable' : 'data_disk_sectors_first_seen' };
 }
 
 function shiftDate(date, days) {

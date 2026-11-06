@@ -129,8 +129,9 @@ export function analyzeJournal(entries, { boots: bootList = [] } = {}) {
     if (m) bump(oom, m[1]);
     m = /^(\S+\.service): Failed with result/.exec(msg);
     if (m && ident === 'systemd') {
-      const f = serviceFailures.get(m[1]) ?? { count: 0, duringBoot: 0, duringShutdown: 0 };
+      const f = serviceFailures.get(m[1]) ?? { count: 0, duringBoot: 0, duringShutdown: 0, last: 0 };
       f.count++;
+      f.last = Math.max(f.last, Math.round(time));
       const ctx = bootContext(time, bootList);
       if (ctx === 'boot') f.duringBoot++;
       if (ctx === 'shutdown') f.duringShutdown++;
@@ -221,6 +222,8 @@ const PROMPTS = {
     '- disks her fiziksel diski anlatır: role "system" işletim sisteminin diski, "data" yalnızca veri diski, "unused" bağlı olmayan disktir. counters SMART sayaçlarıdır (reallocated: yedek alana taşınan, pending: okunamayan, offlineUncorrectable ve reportedUncorrect: düzeltilemeyen sektörler, mediaErrors: NVMe ortam hatası). trend: "increasing" son günlerde arttı, "stable" stableSince tarihinden beri değişmedi, "new" henüz geçmiş yok demektir.',
     '- critical yalnızca acil durumlar içindir: sistem diskinde bozuk sektör, sayaçları artan (increasing) ya da SMART testi geçemeyen (smartPassed false) bir disk, sürekli çöken önemli servisler, bellek yetmediği için öldürülen süreçler ya da yoğun saldırı. Bir veri diskinde sabit (stable) ya da geçmişi henüz olmayan (new) bozuk sektörler warning olur: diskin yıprandığını söyle, önemli veri tutulmamasını ve değişimi izlemeyi öner; "acil", "sunucuyu durdurun" deme. Diğer konular warning ya da info olur.',
     '- Kayıtlardaki <gizli> gizlenmiş bir değerdir (parola, token); bunu bir sorun olarak yorumlama.',
+    '- Disklerle ilgili bulgunun önemi her zaman disks[].assessment.level değeridir; bunu yükseltme ya da düşürme. reason: smart_failed SMART testi geçemiyor, system_disk_sectors sistem diskinde bozuk sektör, sectors_increasing sayaçlar artıyor, data_disk_sectors_stable veri diskinde sabit kalan, data_disk_sectors_first_seen veri diskinde ilk kez kaydedilen bozuk sektörler. role "data" olan diske asla "sistem diski" deme. Her disk için tek bulgu yaz; smartmontools kayıtlarını o bulguya kanıt olarak ekle.',
+    '- failedUnits şu an başarısız durumda olan birimlerdir. serviceFailures içinde olup failedUnits içinde olmayan bir servis şu an çalışıyordur (kendiliğinden yeniden başlamış ya da sorun geçmiştir): bunu "başlatılamıyor" diye değil, "son 24 saatte N kez durdu, şu an çalışıyor" diye yaz. last son hatanın zamanıdır.',
     '- Öneriler ölçülü, somut ve uygulanabilir olsun; gereğinden ağır önlem önerme.',
     '- En fazla 6 bulgu yaz, en önemliden başla. Her bulguda kısa bir başlık, önem (info, warning ya da critical), veriden kanıt (sayı ve servis adıyla) ve öneri olsun.',
     '- status: her şey yolundaysa good, ilgilenilmesi gereken bir şey varsa attention, acil bir sorun varsa critical.',
@@ -240,6 +243,8 @@ const PROMPTS = {
     '- disks describes each physical disk: role "system" is the operating-system disk, "data" a data-only disk, "unused" a disk that is not mounted. counters are SMART counters (reallocated: remapped, pending: unreadable, offlineUncorrectable and reportedUncorrect: uncorrectable sectors, mediaErrors: NVMe media errors). trend: "increasing" grew recently, "stable" unchanged since stableSince, "new" means no history yet.',
     '- Use critical only for urgent issues: bad sectors on the system disk, a disk whose counters are increasing or whose SMART test fails (smartPassed false), important services that keep crashing, processes killed for lack of memory, or a heavy attack. Stable or new bad-sector counts on a data disk are a warning: say the disk is wearing out, suggest not keeping important data on it and watching the counts; do not say "urgent" or "stop the server". Other topics are warning or info.',
     '- <gizli> in log text marks a masked value (password, token); do not treat it as a problem.',
+    '- The severity of any disk finding is always disks[].assessment.level; do not raise or lower it. reason: smart_failed the SMART test fails, system_disk_sectors bad sectors on the system disk, sectors_increasing counts are growing, data_disk_sectors_stable stable bad sectors on a data disk, data_disk_sectors_first_seen bad sectors on a data disk recorded for the first time. Never call a disk with role "data" the system disk. Write one finding per disk and use the smartmontools log lines as its evidence.',
+    '- failedUnits are units that are failed right now. A service in serviceFailures but not in failedUnits is running now (it restarted or the problem passed): write "stopped N times in the last 24 hours, running now", not "cannot start". last is the time of the latest failure.',
     '- Recommendations must be measured, concrete and actionable; do not suggest heavier action than needed.',
     '- Write at most 6 findings, most important first, each with a short title, a severity (info, warning or critical), evidence from the data (with counts and service names) and a recommendation.',
     '- status: good if all is well, attention if something needs a look, critical if there is an urgent problem.',
