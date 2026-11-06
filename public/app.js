@@ -976,6 +976,12 @@ function renderAlerts(s) {
   }
   items.sort((a, b) => (a.level === 'crit' ? 0 : 1) - (b.level === 'crit' ? 0 : 1));
 
+  // GitHub yedeği açıksa: son çalışma başarısızsa ya da 2 günden uzun süredir başarılı yedek yoksa.
+  const b = lastData?.backup;
+  if (b && !b.running) {
+    if (b.ok === false) items.push({ level: 'warn', title: t('alert.backupFailed'), detail: backupErrorText(b.error), href: '#/yedekler' });
+    else if (b.lastOk && Date.now() - b.lastOk > 48 * 3600_000) items.push({ level: 'warn', title: t('alert.backupStale'), detail: t('alert.backupLast', { ago: fmtAgo(b.lastOk) }), href: '#/yedekler' });
+  }
   const box = $('alerts');
   box.hidden = !items.length;
   fill(
@@ -1879,6 +1885,7 @@ function historyText(e) {
   if (e.action === 'refresh') return t('hist.refresh');
   if (e.action === 'reboot') return t('hist.reboot');
   if (e.action === 'report') return e.ok ? t('hist.report') : t('hist.reportFail', { reason });
+  if (e.action === 'github-backup') return e.ok ? t('hist.githubBackup') : t('hist.githubBackupFail', { reason });
   if (e.action === 'self-update') {
     if (!e.ok) return t('hist.selfUpdateFail', { reason });
     return e.upToDate ? t('hist.selfUpdateCurrent', { version: e.version }) : t('hist.selfUpdate', { version: e.version });
@@ -2011,6 +2018,7 @@ const SETTINGS_SECTIONS = [
   ['yeniden-baslatma', 'set.reboot', 'power', buildRebootCard],
   ['disk-testleri', 'set.smartTitle', 'disk', buildSmartTestsCard],
   ['rapor', 'rep.title', 'list', buildReportCard],
+  ['github', 'gh.title', 'download', buildGithubCard],
   ['guvenlik', 'set.security', 'key', buildPasswordCard],
   ['gecmis', 'set.historyTitle', 'list', buildHistoryCard],
   ['hakkinda', 'set.about', 'info', buildAboutCard],
@@ -3972,6 +3980,252 @@ function enterSecurity() {
   else renderSecurity();
 }
 
+// ---------- GitHub yedeği ----------
+
+const GH_USER_RE = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
+const GH_TOKEN_RE = /^(?:gh[pousr]_[A-Za-z0-9_]{20,251}|github_pat_[A-Za-z0-9_]{20,251})$/;
+const GH_DIR_RE = /^(\/[A-Za-z0-9._-]+){2,}$/;
+const backupState = { data: null, timer: null, busy: false };
+
+const backupErrorText = (code, reset) => {
+  const key = `bk.err.${code}`;
+  const text = I18N.DICT[I18N.lang][key] ? t(key) : t('bk.err.failed');
+  return code === 'rate_limited' && reset ? `${text} ${t('bk.rateReset', { time: dateTimeFormat.format(new Date(reset)) })}` : text;
+};
+
+function buildGithubCard() {
+  const enabled = switchEl(false, null, t('gh.enabled'));
+  const user = inputEl('text', '', { class: 'wide', placeholder: t('gh.userPh'), autocomplete: 'off', spellcheck: 'false', maxlength: '39', 'aria-label': t('gh.user') });
+  const token = inputEl('password', '', { class: 'wide mono', autocomplete: 'off', spellcheck: 'false', 'aria-label': t('gh.token') });
+  const dir = inputEl('text', '', { class: 'wide mono', placeholder: '/srv/github-yedek', spellcheck: 'false', 'aria-label': t('gh.dir') });
+  const time = inputEl('time', '04:30', { step: 60 });
+  const forks = switchEl(true, t('gh.forks'));
+  const issues = switchEl(true, t('gh.issues'));
+  const wiki = switchEl(true, t('gh.wiki'));
+  const tokenState = h('span', { class: 'muted small' });
+  const box = h('div', { class: 'status-box' });
+  const status = saveStatus();
+  let tokenSet = false;
+
+  const removeToken = button(t('gh.removeToken'), null, () => saveSystem({ githubBackup: { token: '' } }, status, 'github'));
+  const save = button(t('set.save'), 'accent', () => {
+    const body = { enabled: enabled.input.checked, username: user.value.trim(), dir: dir.value.trim(), time: time.value, forks: forks.input.checked, issues: issues.input.checked, wiki: wiki.input.checked };
+    const tok = token.value.trim();
+    if (body.username && !GH_USER_RE.test(body.username)) return status.set('err', t('gh.badUser'));
+    if (body.dir && !GH_DIR_RE.test(body.dir)) return status.set('err', t('gh.badDir'));
+    if (body.enabled && (!body.username || !body.dir)) return status.set('err', t(body.username ? 'gh.needDir' : 'gh.needUser'));
+    if (tok && !GH_TOKEN_RE.test(tok)) return status.set('err', t('gh.badToken'));
+    if (tok) body.token = tok;
+    if (!body.dir) delete body.dir;
+    token.value = '';
+    saveSystem({ githubBackup: body }, status, 'github');
+  });
+  const now = button(t('gh.runNow'), null, async () => {
+    now.disabled = true;
+    const res = await api('/api/actions', { action: 'github-backup' });
+    now.disabled = false;
+    if (!res.ok) return status.set('err', t('set.saveFailed'));
+    status.set('ok', t('gh.runStarted'));
+  });
+
+  const renderBox = (sys) => {
+    const notes = [];
+    if (sys && !sys.platform?.githubBackup) notes.push(h('div', { class: 'row' }, icon('warn'), h('span', null, t('gh.notInstalled'))));
+    else if (sys && !sys.platform?.git) notes.push(h('div', { class: 'row' }, icon('warn'), h('span', null, t('gh.noGit'))));
+    fill(
+      box,
+      notes,
+      h('div', { class: 'row muted small' }, t('gh.hint')),
+      h(
+        'details',
+        { class: 'gh-help' },
+        h('summary', null, t('gh.tokenHelpTitle')),
+        h('ol', null, h('li', null, t('gh.tokenStep1'), ' ', externalLink('https://github.com/settings/personal-access-tokens/new', t('gh.tokenLink'))), h('li', null, t('gh.tokenStep2')), h('li', null, t('gh.tokenStep3')), h('li', null, t('gh.tokenStep4'))),
+      ),
+    );
+  };
+
+  enabled.onChange((on) => {
+    for (const el of [time, forks.input, issues.input, wiki.input]) el.disabled = !on;
+  });
+
+  settingsCards.github = {
+    sync(sys) {
+      const g = sys?.settings?.githubBackup;
+      if (!g) return;
+      user.value = g.username ?? '';
+      dir.value = g.dir ?? '';
+      time.value = g.time ?? '04:30';
+      forks.set(g.forks !== false);
+      issues.set(g.issues !== false);
+      wiki.set(g.wiki !== false);
+      enabled.set(g.enabled);
+      tokenSet = Boolean(g.tokenSet);
+      token.placeholder = tokenSet ? t('gh.tokenKeep') : t('gh.tokenPh');
+      tokenState.textContent = tokenSet ? t('gh.tokenSet') : t('gh.tokenNone');
+      removeToken.hidden = !tokenSet;
+    },
+    update(sys) {
+      const ok = sys.available && sys.platform?.githubBackup;
+      for (const el of [enabled.input, user, token, dir, save]) el.disabled = !ok;
+      now.disabled = !ok || !sys.settings?.githubBackup?.enabled;
+      renderBox(sys);
+    },
+  };
+  renderBox(null);
+  return settingsCard(
+    'gh.title',
+    'download',
+    t('gh.desc'),
+    box,
+    h(
+      'div',
+      { class: 'form-rows' },
+      formRow(t('gh.enabled'), enabled.el),
+      formRow(t('gh.user'), user, t('gh.userHint')),
+      formRow(t('gh.token'), [token, h('div', { class: 'gh-token-row' }, tokenState, removeToken)], t('gh.tokenHint')),
+      formRow(t('gh.dir'), dir, t('gh.dirHint')),
+      formRow(t('gh.time'), time, t('gh.timeHint')),
+      formRow(t('gh.include'), h('div', { class: 'gh-switches' }, forks.el, issues.el, wiki.el)),
+      formRow(t('gh.runNowLabel'), now, t('gh.runNowHint')),
+    ),
+    h('div', { class: 'form-actions' }, save, status.el),
+  );
+}
+
+function backupTag(s) {
+  if (s?.running) return tag('info', 'clock', t('bk.running'));
+  if (!s || s.ok === null) return tag('', 'off', t('bk.never'));
+  return s.ok ? tag('ok', 'ok', t('bk.ok')) : tag(s.error === 'repo_errors' || s.error === 'rate_limited' ? 'warn' : 'crit', s.error === 'repo_errors' || s.error === 'rate_limited' ? 'warn' : 'crit', t('bk.failed'));
+}
+
+function renderBackups() {
+  const root = $('backups-root');
+  const d = backupState.data;
+  if (!d) return fill(root, h('article', { class: 'card' }, placeholder(t('common.loading'))));
+  const g = d.settings;
+  const settingsLink = h('a', { class: 'btn', href: '#/ayarlar/github' }, icon('gear'), t('bk.toSettings'));
+  if (!d.available) return fill(root, h('article', { class: 'card' }, errorBox(t('gh.notInstalled'))));
+  if (!g?.enabled) return fill(root, h('article', { class: 'card bk-empty' }, h('h2', { class: 'card-title' }, icon('download'), h('span', null, t('bk.title'))), h('p', { class: 'muted' }, t('bk.disabled')), settingsLink));
+
+  const s = d.status;
+  const runBtn = button(t('gh.runNow'), 'accent', async () => {
+    backupState.busy = true;
+    runBtn.disabled = true;
+    const res = await api('/api/actions', { action: 'github-backup' });
+    if (!res.ok) {
+      backupState.busy = false;
+      runBtn.disabled = false;
+      return;
+    }
+    // Yardımcı isteği birkaç saniye içinde işler; durum dosyası değişince sayfa yenilenir.
+    setTimeout(() => {
+      backupState.busy = false;
+      loadBackups();
+    }, 4000);
+  });
+  runBtn.disabled = backupState.busy || Boolean(s?.running);
+  const tot = s?.totals;
+  const progress = s?.running ? h('div', { class: 'bk-progress' }, meter(s.total ? (s.done / s.total) * 100 : 0, 101, 101), h('span', { class: 'muted small' }, t('bk.progress', { done: s.done ?? 0, total: s.total ?? '?', repo: s.current ?? '…' }))) : null;
+  const duration = s?.finishedAt && s.startedAt ? fmtDuration(Math.max(1, (s.finishedAt - s.startedAt) / 1000)) : null;
+
+  const summary = h(
+    'article',
+    { class: 'card span-3' },
+    h('div', { class: 'card-head' }, h('h2', { class: 'card-title' }, icon('download'), h('span', null, t('bk.title'))), h('span', { class: 'card-meta' }, `github.com/${g.username}`), h('div', { class: 'card-tools' }, settingsLink, runBtn)),
+    progress,
+    s?.error && !s.running ? errorBox(backupErrorText(s.error, s.rateReset)) : null,
+    h(
+      'div',
+      { class: 'kpis bk-kpis' },
+      [
+        [t('bk.state'), backupTag(s), s?.finishedAt ? `${fmtAgo(s.finishedAt)}${duration ? ` · ${duration}` : ''}` : ''],
+        [t('bk.lastOk'), s?.lastOk ? fmtAgo(s.lastOk) : '—', t('bk.daily', { time: g.time })],
+        [t('bk.repos'), tot ? num0.format(tot.repos) : '—', tot?.failed ? t('bk.failedCount', { n: tot.failed }) : g.tokenSet ? t('bk.withPrivate') : t('bk.publicOnly')],
+        [t('bk.size'), tot ? fmtBytes(tot.size) : '—', g.dir],
+        [t('bk.releases'), tot ? num0.format(tot.releases) : '—', tot ? t('bk.assets', { n: num0.format(tot.assets) }) : ''],
+        [t('bk.issues'), tot ? num0.format(tot.issues) : '—', g.issues ? '' : t('bk.off')],
+      ].map(([label, value, sub]) => h('div', { class: 'kpi' }, h('div', { class: 'kpi-label' }, label), h('div', { class: 'kpi-value' }, value), h('div', { class: 'kpi-sub muted small', title: sub }, sub))),
+    ),
+  );
+
+  const repos = s?.repos ?? [];
+  const reposCard = h(
+    'article',
+    { class: 'card span-3' },
+    h('div', { class: 'card-head' }, h('h2', { class: 'card-title' }, icon('list'), h('span', null, t('bk.repoList'))), h('span', { class: 'card-meta' }, repos.length ? t('bk.repoMeta', { n: repos.length }) : '')),
+    repos.length
+      ? table(
+          [[t('bk.repo')], [t('bk.lastCommit')], [t('bk.refs'), 'r'], [t('bk.releases'), 'r'], [t('bk.issues'), 'r'], [t('bk.size'), 'r'], [t('bk.state'), 'r']],
+          repos.map((r) =>
+            h(
+              'tr',
+              null,
+              h(
+                'td',
+                { class: 'break' },
+                h('strong', null, r.name),
+                ' ',
+                r.private ? h('span', { class: 'tag' }, t('bk.private')) : null,
+                r.fork ? h('span', { class: 'tag' }, 'fork') : null,
+                r.archived ? h('span', { class: 'tag' }, t('bk.archived')) : null,
+                r.deletedOnGithub ? h('span', { class: 'tag warn', title: t('bk.deletedHint') }, icon('warn'), t('bk.deleted')) : null,
+                r.forcedSaved ? h('span', { class: 'tag info', title: t('bk.forcedHint') }, t('bk.forced', { n: r.forcedSaved })) : null,
+              ),
+              h('td', { class: 'nowrap muted' }, r.lastCommit ? fmtAgo(r.lastCommit) : '—'),
+              h('td', { class: 'r' }, r.branches != null ? t('bk.refsValue', { b: r.branches, t: r.tags }) : '—'),
+              h('td', { class: 'r' }, r.releases != null ? num0.format(r.releases) : '—'),
+              h('td', { class: 'r' }, r.issues != null ? num0.format(r.issues) : '—'),
+              h('td', { class: 'r' }, r.size != null ? fmtBytes(r.size) : '—'),
+              h('td', { class: 'r' }, r.ok ? tag('ok', 'ok', t('bk.ok')) : h('span', { title: (r.errors ?? []).join('\n') }, tag('crit', 'crit', t('bk.failed')))),
+            ),
+          ),
+        )
+      : placeholder(s?.running ? t('bk.firstRun') : t('bk.noRepos')),
+  );
+
+  const runs = d.runs ?? [];
+  const runsCard = runs.length
+    ? h(
+        'article',
+        { class: 'card span-3' },
+        h('div', { class: 'card-head' }, h('h2', { class: 'card-title' }, icon('clock'), h('span', null, t('bk.runs')))),
+        table(
+          [[t('bk.started')], [t('bk.duration'), 'r'], [t('bk.repos'), 'r'], [t('bk.state'), 'r']],
+          runs.map((r) =>
+            h(
+              'tr',
+              null,
+              h('td', { class: 'nowrap' }, dateTimeFormat.format(new Date(r.startedAt)), r.trigger === 'manual' ? h('span', { class: 'muted small' }, ` · ${t('bk.manual')}`) : null),
+              h('td', { class: 'r muted' }, r.finishedAt ? fmtDuration(Math.max(1, (r.finishedAt - r.startedAt) / 1000)) : '—'),
+              h('td', { class: 'r' }, num0.format(r.repos ?? 0)),
+              h('td', { class: 'r' }, r.ok ? tag('ok', 'ok', t('bk.ok')) : h('span', { title: backupErrorText(r.error) }, tag('crit', 'crit', t('bk.failed')))),
+            ),
+          ),
+        ),
+      )
+    : null;
+
+  fill(root, h('div', { class: 'grid' }, summary, reposCard, runsCard));
+}
+
+async function loadBackups() {
+  clearTimeout(backupState.timer);
+  const res = await api('/api/backup');
+  if (res.ok) backupState.data = res.data;
+  renderBackups();
+  if (currentRoute() === 'yedekler') backupState.timer = setTimeout(loadBackups, backupState.data?.status?.running || backupState.busy ? 2000 : 30_000);
+}
+
+function enterBackups() {
+  renderBackups();
+  loadBackups();
+}
+
+function leaveBackups() {
+  clearTimeout(backupState.timer);
+}
+
 // ---------- Bölümler ve sol menü ----------
 
 const ROUTES = {
@@ -3988,6 +4242,7 @@ const ROUTES = {
   raporlar: t('nav.reports'),
   gunlukler: t('nav.logs'),
   guvenlik: t('nav.security'),
+  yedekler: t('nav.backups'),
   ayarlar: t('nav.settings'),
 };
 let hostName = null;
@@ -4041,6 +4296,8 @@ function applyRoute() {
   if (route === 'gunlukler') enterLogs();
   else leaveLogs();
   if (route === 'guvenlik') enterSecurity();
+  if (route === 'yedekler') enterBackups();
+  else leaveBackups();
   window.scrollTo(0, 0);
   // Gizliyken genişliği sıfır olan grafikler görünür olunca yeniden çizilir.
   requestAnimationFrame(redrawCharts);

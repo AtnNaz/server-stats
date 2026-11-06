@@ -1,0 +1,41 @@
+[Unit]
+Description=Node Stats - GitHub yedeği
+Documentation=file:///opt/serverhealth/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Ayarlar → GitHub yedekleme'den açılır; zamanlayıcıyı (serverhealth-github.timer), yedek klasörünü
+# (ReadWritePaths, dir.conf) ve token'ı (LoadCredential, token.conf) root yardımcısı yazar.
+# Yetkisiz kendi kullanıcısıyla çalışır: yalnızca yedek klasörüne ve kendi durum klasörüne yazabilir.
+User=serverhealth-backup
+Group=serverhealth-backup
+ExecStart=@NODE@ /opt/serverhealth/bin/serverhealth-github-backup.js --config /var/lib/serverhealth/github-backup.json
+Environment=HOME=/var/lib/serverhealth-backup
+# Durum dosyası panel tarafından okunur.
+StateDirectory=serverhealth-backup
+StateDirectoryMode=0755
+UMask=0027
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=6h
+
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

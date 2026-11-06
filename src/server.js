@@ -3,7 +3,7 @@ import os from 'node:os';
 import http from 'node:http';
 import https from 'node:https';
 import { readFileSync } from 'node:fs';
-import { readFile, writeFile, mkdir, rename, readdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename, readdir, stat } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -321,6 +321,39 @@ function main() {
     } catch (err) {
       return sendQueryError(req, res, err);
     }
+  }
+
+  // --- GitHub yedeği: durum dosyaları yedek servisinin kendi klasöründe, panel yalnızca okur ---
+  const backupCache = { mtime: 0, status: null };
+  async function backupStatus() {
+    const file = path.join(config.backup.dir, 'status.json');
+    try {
+      const { mtimeMs } = await stat(file);
+      if (mtimeMs !== backupCache.mtime) Object.assign(backupCache, { mtime: mtimeMs, status: JSON.parse(await readFile(file, 'utf8')) });
+    } catch {
+      Object.assign(backupCache, { mtime: 0, status: null });
+    }
+    return backupCache.status;
+  }
+
+  // Genel bakış uyarısı için kısa özet: açık mı, son yedek ne zaman, başarılı mı.
+  async function backupSummary(system) {
+    const g = system.settings?.githubBackup;
+    if (!g?.enabled) return null;
+    const s = await backupStatus();
+    return { running: Boolean(s?.running), ok: s?.ok ?? null, error: s?.error ?? null, lastOk: s?.lastOk ?? null, finishedAt: s?.finishedAt ?? null, enabledAt: system.updated ?? null };
+  }
+
+  async function handleBackup(req, res) {
+    const system = await readSystemStatus();
+    const runs = await readFile(path.join(config.backup.dir, 'runs.json'), 'utf8').then((t) => JSON.parse(t), () => []);
+    return sendJson(req, res, 200, {
+      available: Boolean(system.platform?.githubBackup),
+      git: Boolean(system.platform?.git),
+      settings: system.settings?.githubBackup ?? null,
+      status: await backupStatus(),
+      runs: runs.slice(-20).reverse(),
+    });
   }
 
   // Bekleyen güncellemelerin yapay zekâ özeti; aynı paket listesi için sonuç bellekte tutulur.
@@ -642,6 +675,7 @@ function main() {
         user,
         settings: { language: effective.language, thresholds: effective.thresholds },
         update: update.available ? { latest: update.latest } : null,
+        backup: await backupSummary(await readSystemStatus()),
         ...sampler.current(),
       });
     }
@@ -692,6 +726,7 @@ function main() {
         return sendQueryError(req, res, err);
       }
     }
+    if (pathname === '/api/backup') return handleBackup(req, res);
     if (pathname === '/api/security') return handleSecurity(req, res, new URL(req.url, 'http://localhost').searchParams);
     if (pathname === '/api/services/available') {
       try {

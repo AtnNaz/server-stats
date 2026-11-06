@@ -4,12 +4,22 @@
 
 export const WEEKDAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 export const UPDATE_MODES = ['off', 'security', 'all'];
-export const ACTIONS = ['update', 'reboot', 'refresh', 'report', 'self-update'];
+export const ACTIONS = ['update', 'reboot', 'refresh', 'report', 'self-update', 'github-backup'];
 // Panel terminalinin açılacağı Linux kullanıcı adı
 export const TERM_USER = /^[a-z_][a-z0-9_-]{0,31}$/;
 // Ollama model adı, ör. "qwen3.5:4b" ya da "hf.co/kullanici/model:Q4_0"
 export const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
+// GitHub kullanıcı adı ve token biçimleri (klasik ghp_, ince ayarlı github_pat_ ve diğer gh*_ türleri)
+export const GITHUB_USER = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
+export const GITHUB_TOKEN = /^(?:gh[pousr]_[A-Za-z0-9_]{20,251}|github_pat_[A-Za-z0-9_]{20,251})$/;
+// Yedek klasörü sistem klasörlerinden birinde olamaz; boşluk ve özel karakter içermez (systemd ayarına yazılır).
+const SYSTEM_DIRS = ['/etc', '/usr', '/bin', '/sbin', '/lib', '/lib32', '/lib64', '/libx32', '/boot', '/proc', '/sys', '/dev', '/run', '/root', '/tmp', '/var/tmp', '/var/log', '/var/cache', '/var/lib/docker', '/snap', '/opt/serverhealth', '/var/lib/serverhealth', '/var/lib/serverhealth-panel', '/var/lib/serverhealth-queue', '/var/lib/serverhealth-backup'];
+export function validBackupDir(p) {
+  if (typeof p !== 'string' || p.length > 200 || !/^(\/[A-Za-z0-9._-]+){2,}$/.test(p)) return false;
+  if (p.split('/').some((part) => part === '.' || part === '..')) return false;
+  return !SYSTEM_DIRS.some((d) => p === d || p.startsWith(`${d}/`));
+}
 
 const isBool = (v) => typeof v === 'boolean';
 const isTime = (v) => typeof v === 'string' && TIME.test(v);
@@ -37,6 +47,7 @@ export function validateSystemSettings(input) {
     smartTests: (v) => typeof v === 'object' && v !== null,
     report: (v) => typeof v === 'object' && v !== null,
     terminal: (v) => typeof v === 'object' && v !== null,
+    githubBackup: (v) => typeof v === 'object' && v !== null,
   });
   errors.push(...top.errors);
   const value = top.value;
@@ -66,7 +77,28 @@ export function validateSystemSettings(input) {
     if (r.value.enabled && !r.value.user) errors.push('terminal.user');
     value.terminal = r.value;
   }
+  if (value.githubBackup) {
+    const r = validateGithubBackup(value.githubBackup);
+    errors.push(...r.errors.map((e) => `githubBackup.${e}`));
+    value.githubBackup = r.value;
+  }
   return { errors, value };
+}
+
+// token: verilmezse kayıtlı token korunur, boş metin kayıtlı token'ı siler.
+export function validateGithubBackup(input) {
+  const r = validateObject(input, {
+    enabled: isBool,
+    username: (v) => v === '' || (typeof v === 'string' && GITHUB_USER.test(v)),
+    time: isTime,
+    dir: validBackupDir,
+    forks: isBool,
+    issues: isBool,
+    wiki: isBool,
+    token: (v) => v === '' || (typeof v === 'string' && GITHUB_TOKEN.test(v)),
+  });
+  if (r.value.enabled && (!r.value.username || !r.value.dir)) r.errors.push(r.value.username ? 'dir' : 'username');
+  return r;
 }
 
 export function validateRequest(req) {

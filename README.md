@@ -14,6 +14,7 @@ Geliştirici: [Ali Toprak Naz](https://github.com/AtnNaz) · Lisans: [PolyForm N
 - **Docker:** konteynerler ve durumları (isteğe bağlı)
 - **Disk alanı analizi:** Depolama sayfasında bir diski taratıp hangi klasörün ne kadar yer kapladığını kutu haritasında görürsünüz; klasörlere tıklayarak inilir, en büyük dosyalar listelenir (bkz. [Disk alanı, günlükler ve güvenlik](#disk-alanı-günlükler-ve-güvenlik))
 - **Günlükler:** sistem günlüğü, tek bir servis, çekirdek ya da Docker konteyneri kayıtları; önem derecesi, zaman aralığı ve metinle süzülür, canlı izlenebilir
+- **GitHub yedeği:** Ayarlar'a GitHub kullanıcı adınızı girersiniz; repolarınız her gün bu sunucuya kopyalanır: bütün commit'ler, branch'ler, tag'ler, release'ler (notları ve dosyalarıyla), isteğe bağlı issue/PR'lar ve wiki. GitHub'da silinen hiçbir şey yedekten silinmez (bkz. [GitHub yedeği](#github-yedeği))
 - **Güvenlik:** dinlenen portlar ve hangi programa/konteynere ait oldukları, kime açık oldukları (bu makine, Tailscale, bütün ağlar), SSH ayarları, başarısız ve başarılı girişler, oturum açabilen kullanıcılar ve bunlardan çıkan öneriler
 - **İnternet hızı:** Ağ sayfasından tek tıkla hız testi (sunucu ile Cloudflare arasında indirme, yükleme, gecikme); isteğe bağlı 1–24 saatte bir otomatik test ve geçmiş grafiği
 - **Güncelleme önizlemesi:** Ayarlar → Güncellemeler'de bekleyen paketlerin listesi (güvenlik güncellemeleri işaretli) ve yerel modelle kısa bir özet
@@ -21,7 +22,7 @@ Geliştirici: [Ali Toprak Naz](https://github.com/AtnNaz) · Lisans: [PolyForm N
 - **Terminal:** sunucunun komut satırı tarayıcıda (htop, nano, sudo çalışır); seçtiğiniz kullanıcıyla açılır, varsayılan kapalıdır (bkz. [Terminal](#terminal))
 - **Yapay zekâ:** sunucudaki [Ollama](https://ollama.com) ile sohbet, model indirme/silme ve hız testi; hiçbir şey dışarı gönderilmez. Sohbetler sunucuda saklanır (`/var/lib/serverhealth-panel/chats`), böylece başka bir cihazdan da devam edilir; ekran kartı belleğine sığan modeller önerilir. Model sunucunun anlık durumunu (diskler, SMART, sıcaklık, ekran kartı, servisler, güncellemeler, son rapor) her zaman görür. "Komut çalıştırma" açıksa sorunları araştırmak için kendisi komut da çalıştırabilir (bkz. [Yapay zekâ komutları](#yapay-zekâ-komutları))
 
-Panel sol menüden bölümlere ayrılır (Genel bakış, Geçmiş, Ekran kartı, Depolama, Ağ, Süreçler, Servisler, Günlükler, Güvenlik, Terminal, Yapay zekâ, Raporlar); menüdeki rozetler sorunlu bölümleri işaret eder. Birkaç saniyede bir kendini günceller; canlı grafikler son 10 dakikayı, Geçmiş sayfası son 30 günü gösterir. Giriş ekranından oturum açılır; aynı veriler `/api/stats` adresinden JSON olarak da alınabilir (bkz. [API](#api)).
+Panel sol menüden bölümlere ayrılır (Genel bakış, Geçmiş, Ekran kartı, Depolama, Ağ, Süreçler, Servisler, Günlükler, Güvenlik, Yedekler, Terminal, Yapay zekâ, Raporlar); menüdeki rozetler sorunlu bölümleri işaret eder. Birkaç saniyede bir kendini günceller; canlı grafikler son 10 dakikayı, Geçmiş sayfası son 30 günü gösterir. Giriş ekranından oturum açılır; aynı veriler `/api/stats` adresinden JSON olarak da alınabilir (bkz. [API](#api)).
 
 Hiçbir npm paketine ihtiyaç duymaz; yalnızca Node.js'in kendi modüllerini kullanır (terminal ekranı için [xterm.js](https://xtermjs.org) dosyaları `public/vendor` içinde gelir, MIT lisanslı) ve bilgileri doğrudan `/proc`, `/sys` ve `systemctl` üzerinden okur. Kendiliğinden yapılan tek dış bağlantı, iki günde bir GitHub'dan son sürüm numarasını sormaktır; bu istekte sunucuya dair hiçbir bilgi gönderilmez ve `"updateCheck": false` ile kapatılabilir. İnternet hız testi yalnızca siz başlattığınızda ya da Ağ sayfasında otomatik testi açtığınızda Cloudflare'in hız testi sunucusuna (`speed.cloudflare.com`) bağlanır.
 
@@ -93,10 +94,11 @@ Elle güncellemek için `cd ~/server-stats && git pull` ile yeni sürümü indir
 ### Kaldırma
 
 ```bash
-sudo systemctl disable --now serverhealth serverhealth-query.socket serverhealth-smart.timer serverhealth-helper.path serverhealth-helper.timer serverhealth-reboot.timer serverhealth-smarttest-short.timer serverhealth-smarttest-long.timer
+sudo systemctl disable --now serverhealth serverhealth-query.socket serverhealth-github.timer serverhealth-smart.timer serverhealth-helper.path serverhealth-helper.timer serverhealth-reboot.timer serverhealth-smarttest-short.timer serverhealth-smarttest-long.timer
 sudo rm -rf /opt/serverhealth /etc/systemd/system/serverhealth* /etc/serverhealth /var/lib/serverhealth /var/lib/serverhealth-panel /var/lib/serverhealth-queue /etc/apt/apt.conf.d/52serverhealth
 sudo systemctl daemon-reload
 sudo userdel serverhealth
+sudo userdel serverhealth-backup
 ```
 
 ## Yapılandırma
@@ -182,6 +184,27 @@ Bu üç sayfa root yetkisi ister (her klasörü görebilmek, sistem günlüğün
 - **Disk alanı:** dosyaların içeriği okunmaz, yalnızca adları ve diskte kapladıkları yer. Tarama başka disklere geçmez (bağlı diskler ayrıca listelenir), sabit bağlantıları bir kez sayar ve en fazla 150 saniye sürer. Son 8 tarama 30 dakika panelin belleğinde tutulur.
 - **Günlükler:** Docker konteyner kayıtları `json-file` sürücüsüyle yazılan dosyalardan okunur; panel servisinin `docker` grubunda olması gerekmez. Konteyner kayıtlarında önem derecesi olmadığı için satırdaki `ERROR`, `WARN` gibi sözcüklerden tahmin edilir.
 - **Güvenlik:** öneriler panelde hesaplanır; panel hiçbir ayarı değiştirmez. "Bütün ağlar" yerel ağdaki herkesin, modemde port yönlendirmesi varsa internetin bağlanabileceği anlamına gelir.
+
+## GitHub yedeği
+
+**Ayarlar → GitHub yedekleme** bölümüne GitHub kullanıcı adınızı ve yedeklerin duracağı klasörü (ör. ayrı bir diskte `/mnt/disk/github-yedek`) girip açın. Yedek her gün seçtiğiniz saatte alınır; sunucu o saatte kapalıysa açılışta alınır. **Yedekler** sayfası son yedeği, repoları ve geçmiş çalışmaları gösterir; oradan "Şimdi yedekle" de denebilir. Yedek başarısız olursa ya da 2 günden uzun süre alınamazsa Genel bakış'ta uyarı çıkar.
+
+Yedek klasöründe her repo için:
+
+| Yol | İçerik |
+| --- | --- |
+| `<kullanıcı>/<repo>/kod.git` | Bütün branch, tag ve pull request referanslarıyla çıplak git aynası |
+| `<kullanıcı>/<repo>/wiki.git` | Wiki (varsa) |
+| `<kullanıcı>/<repo>/release/<tag>/` | `release.json` (notlar), ekli dosyalar (`dosyalar/`), `kaynak.tar.gz` |
+| `<kullanıcı>/<repo>/issue/<no>.json` | Issue ve PR'lar, yorumları ve inceleme yorumlarıyla |
+| `<kullanıcı>/<repo>/repo.json` | Açıklama, görünürlük, yedek bilgisi |
+
+- **Hiçbir şey silinmez.** GitHub'da silinen repo, branch, tag ve release yedekte kalır ve "GitHub'da yok" diye işaretlenir. Bir branch force-push ile yeniden yazılırsa önceki hâli `refs/yedek/zorla/<zaman>/` altında saklanır. Git'in referans günlüğü hiç temizlenmez.
+- **Doğrulama:** her gün değişen depolarda `git fsck --connectivity-only`, pazar günleri bütün depolarda tam `git fsck` çalışır. Release dosyaları GitHub'ın verdiği sha256 değeriyle karşılaştırılır; uymayan dosya kaydedilmez.
+- **Token (isteğe bağlı):** yalnızca kullanıcı adıyla herkese açık repolar yedeklenir. Özel repolar için GitHub'da salt okunur bir *fine-grained* token oluşturun (Repository access: *All repositories*; Permissions: *Contents*, *Issues*, *Pull requests* → *Read-only*) ve Ayarlar'a yapıştırın. Token ayrıca GitHub'ın saatlik istek sınırını 60'tan 5000'e çıkarır; sınıra takılan yedek bir sonraki çalışmada kaldığı yerden devam eder. Token `/etc/serverhealth/github-token` dosyasında yalnızca root'un okuyabileceği şekilde durur, panelde ya da kayıtlarda hiç görünmez; git'e komut satırıyla değil ortam değişkeniyle verilir.
+- **Yetkiler:** yedekleme `serverhealth-github.service` ile, kendi yetkisiz kullanıcısıyla (`serverhealth-backup`) çalışır ve yalnızca yedek klasörüne yazabilir. Klasör yoksa üst klasörü var olduğu sürece oluşturulur; disk bağlı değilse yedek sistem diskine yazılmaz, hata verir.
+- **Geri yükleme:** `git clone /mnt/disk/github-yedek/<kullanıcı>/<repo>/kod.git` ile çalışma kopyası çıkarılır; GitHub'a ya da başka bir yere bütünüyle göndermek için `git push --mirror <yeni-adres>` kullanılır.
+- Gereksinim: `git`. Git LFS dosyaları yedeklenmez.
 
 ## Yapay zekâ komutları
 
@@ -279,6 +302,7 @@ Let's Encrypt anahtarlarını yalnızca root okuyabildiği için systemd bunlar�
 | `Port 8080 başka bir uygulama tarafından kullanılıyor` | `config.json` içinde başka bir `port` seçin |
 | Servisler kartında `systemctl hatası` | Birim adlarını `systemctl status AD` ile kontrol edin |
 | Docker kartında `erişim izni yok` | `sudo ./deploy/install.sh --docker` çalıştırın |
+| Yedekler sayfasında `GitHub yedek servisi kurulu değil` | `sudo ./deploy/install.sh` ile kurulumu güncelleyin; ayrıntı: `journalctl -u serverhealth-github` |
 | Depolama, Günlükler ya da Güvenlik sayfasında `sorgu yardımcısı kurulu değil` | Kurulumu güncelleyin: `sudo ./deploy/install.sh` (ayrıntı: `journalctl -u 'serverhealth-query@*'`) |
 | Bir disk `yanıt vermiyor` | Ağ diski (NFS/CIFS) erişilemiyor; panel diğer verileri göstermeye devam eder |
 

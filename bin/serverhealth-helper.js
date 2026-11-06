@@ -9,7 +9,7 @@
 //   serverhealth-helper.js --smart-test short  bütün disklerde kısa SMART testini başlat
 //   --root DİZİN --dry-run                      testler için: dosyaları DİZİN altına yaz, komut çalıştırma
 import { execFile, spawn } from 'node:child_process';
-import { readFile, writeFile, readdir, lstat, unlink, rename, mkdir, stat, appendFile, access, open, rm, constants } from 'node:fs/promises';
+import { readFile, writeFile, readdir, lstat, unlink, rename, mkdir, stat, appendFile, access, open, rm, chown, chmod, constants } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -53,6 +53,8 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
     history: P('/var/lib/serverhealth/actions.jsonl'),
     updateLog: P('/var/lib/serverhealth/update.log'),
     queue: queue ? (root ? path.join(root, queue) : queue) : P(QUEUE_DIR),
+    githubConfig: P('/var/lib/serverhealth/github-backup.json'),
+    githubToken: P('/etc/serverhealth/github-token'),
   };
   const commands = []; // --dry-run'da çalıştırılacak komutların kaydı (testler için)
 
@@ -106,7 +108,8 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
 
   async function detectPlatform() {
     if (platformOverride) return { ...platformOverride };
-    const [apt, dnf, systemctl, smartctl, python3] = await Promise.all(['apt-get', 'dnf', 'systemctl', 'smartctl', 'python3'].map(which));
+    const [apt, dnf, systemctl, smartctl, python3, git] = await Promise.all(['apt-get', 'dnf', 'systemctl', 'smartctl', 'python3', 'git'].map(which));
+    const githubUnit = await access(path.join(files.units, GITHUB_SERVICE)).then(() => true, () => false);
     const termUnit = await access(path.join(files.units, TERM_SOCKET)).then(() => true, () => false);
     const packageManager = apt ? 'apt' : dnf ? 'dnf' : null;
     let unattendedInstalled = false;
@@ -122,6 +125,8 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
       smartTests: Boolean(smartctl),
       unattendedInstalled,
       terminal: Boolean(python3 && termUnit),
+      git: Boolean(git),
+      githubBackup: githubUnit,
       terminalUsers: await terminalUsers(),
     };
   }
@@ -131,6 +136,7 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
     smartTests: { enabled: false, shortDay: 'sun', longDay: 1, time: '03:00' },
     report: { enabled: false, time: '07:00', model: '' },
     terminal: { enabled: false, user: '' },
+    githubBackup: { enabled: false, username: '', time: '04:30', dir: '', forks: true, issues: true, wiki: true, tokenSet: false },
     rebootTime: '04:00',
   };
 
@@ -144,6 +150,7 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
         smartTests: { ...DEFAULT_STATE.smartTests, ...saved.smartTests },
         report: { ...DEFAULT_STATE.report, ...saved.report },
         terminal: { ...DEFAULT_STATE.terminal, ...saved.terminal },
+        githubBackup: { ...DEFAULT_STATE.githubBackup, ...saved.githubBackup },
       };
     } catch {
       return structuredClone(DEFAULT_STATE);
@@ -222,6 +229,70 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
     await setTerminal(tm.user);
   }
 
+  // GitHub yedeği: servis kurulumla gelir (ayrı, yetkisiz serverhealth-backup kullanıcısıyla çalışır).
+  // Burada yalnızca yapılandırma, token, yedek klasörü ve zamanlayıcı yazılır.
+  const GITHUB_SERVICE = 'serverhealth-github.service';
+  const GITHUB_TIMER = 'serverhealth-github.timer';
+  const BACKUP_USER = 'serverhealth-backup';
+  const githubDropIn = (name) => path.join(files.units, `${GITHUB_SERVICE}.d`, name);
+
+  async function backupOwner() {
+    const line = (await readFile(P('/etc/passwd'), 'utf8').catch(() => ''))
+      .split('\n')
+      .map((l) => l.split(':'))
+      .find((f) => f[0] === BACKUP_USER);
+    if (!line) throw new Error('backup_user_missing');
+    return { uid: Number(line[2]), gid: Number(line[3]) };
+  }
+
+  // Yedek klasörü: yoksa oluşturulur (üst klasör var olmalı; bağlı olmayan bir diskin yerine sistem
+  // diskine yazılmasın). Varsa ve başkasına aitse yalnızca boşsa devralınır.
+  async function prepareBackupDir(dir) {
+    const owner = await backupOwner();
+    const target = P(dir);
+    const info = await lstat(target).catch(() => null);
+    if (!info) {
+      const parent = await stat(path.dirname(target)).catch(() => null);
+      if (!parent?.isDirectory()) throw new Error('backup_dir_parent');
+      await mkdir(target, { mode: 0o750 });
+    } else if (!info.isDirectory()) {
+      throw new Error('backup_dir');
+    } else if (info.uid !== owner.uid && (await readdir(target)).length) {
+      throw new Error('backup_dir_in_use');
+    }
+    if (!dryRun) {
+      await chown(target, owner.uid, owner.gid);
+      await chmod(target, 0o750);
+    }
+  }
+
+  async function applyGithubBackup(g, token) {
+    if (token !== undefined) {
+      if (token) await writeAtomic(files.githubToken, `${token}\n`, 0o600);
+      else await unlink(files.githubToken).catch(() => {});
+    }
+    const hasToken = await access(files.githubToken).then(() => true, () => false);
+    if (hasToken) await writeAtomic(githubDropIn('token.conf'), `[Service]\nLoadCredential=github-token:/etc/serverhealth/github-token\n`);
+    else await unlink(githubDropIn('token.conf')).catch(() => {});
+    if (g.enabled) {
+      if (!platform.githubBackup) throw new Error('github_unsupported');
+      if (!platform.git) throw new Error('git_missing');
+      await prepareBackupDir(g.dir);
+      const { username, dir, time, forks, issues, wiki } = g;
+      await writeAtomic(files.githubConfig, `${JSON.stringify({ username, dir, time, forks, issues, wiki }, null, 2)}\n`, 0o644);
+      await writeAtomic(githubDropIn('dir.conf'), `[Service]\nReadWritePaths=${dir}\n`);
+      // Persistent=true: sunucu o saatte kapalıysa yedek açılışta alınır.
+      await writeAtomic(path.join(files.units, GITHUB_TIMER), `[Unit]\nDescription=Node Stats - günlük GitHub yedeği\n\n[Timer]\nOnCalendar=${onCalendarWeekly('daily', time)}\nPersistent=true\nUnit=${GITHUB_SERVICE}\n\n[Install]\nWantedBy=timers.target\n`);
+      await run(platform.systemctl, ['daemon-reload']);
+      await run(platform.systemctl, ['enable', '--now', GITHUB_TIMER]);
+    } else {
+      await run(platform.systemctl, ['disable', '--now', GITHUB_TIMER]);
+      await unlink(path.join(files.units, GITHUB_TIMER)).catch(() => {});
+      await run(platform.systemctl, ['daemon-reload']);
+    }
+    return hasToken;
+  }
+
   let platform;
 
   async function applySettings(requested) {
@@ -233,7 +304,11 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
       smartTests: { ...state.smartTests, ...requested.smartTests },
       report: { ...state.report, ...requested.report },
       terminal: { ...state.terminal, ...requested.terminal },
+      githubBackup: { ...state.githubBackup, ...requested.githubBackup },
     };
+    // Token durum dosyasına ve geçmişe yazılmaz; yalnızca root'a ait ayrı dosyada durur.
+    const token = requested.githubBackup?.token;
+    delete next.githubBackup.token;
     const changes = [];
 
     if ('updates' in requested || 'rebootAfterUpdate' in requested || 'rebootTime' in requested) {
@@ -297,6 +372,11 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
         await removeTerminal();
       }
       changes.push('terminal');
+    }
+
+    if (requested.githubBackup) {
+      next.githubBackup.tokenSet = await applyGithubBackup(next.githubBackup, token);
+      changes.push('githubBackup');
     }
 
     await writeAtomic(files.state, `${JSON.stringify(next, null, 2)}\n`, 0o644);
@@ -388,6 +468,7 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
         smartTests: state.smartTests,
         report: state.report,
         terminal: state.terminal,
+        githubBackup: state.githubBackup,
       },
       updates: extra.updates ?? previous.updates ?? null,
       running: extra.running ?? null,
@@ -481,9 +562,9 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
       if (req.type === 'settings') {
         try {
           const changes = await applySettings(req.settings);
-          await record({ type: 'settings', ok: true, changes, settings: req.settings });
+          await record({ type: 'settings', ok: true, changes, settings: withoutToken(req.settings) });
         } catch (err) {
-          await record({ type: 'settings', ok: false, message: err.message, settings: req.settings });
+          await record({ type: 'settings', ok: false, message: err.message, settings: withoutToken(req.settings) });
         }
         continue;
       }
@@ -511,6 +592,11 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
         } catch (err) {
           await record({ type: 'action', action: 'self-update', ok: false, message: err.message });
         }
+      } else if (req.action === 'github-backup') {
+        const g = (await loadState()).githubBackup;
+        const ok = g.enabled && platform.githubBackup;
+        const r = ok ? await run(platform.systemctl, ['start', '--no-block', GITHUB_SERVICE]) : { code: 1 };
+        await record({ type: 'action', action: 'github-backup', ok: r.code === 0, ...(r.code !== 0 && { message: ok ? 'backup_start_failed' : 'backup_disabled' }) });
       } else if (req.action === 'report') {
         // Rapor birkaç dakika sürebilir; servis arka planda başlatılır, sonucu Raporlar sayfasında görünür.
         const r = await run(platform.systemctl, ['start', '--no-block', 'serverhealth-report.service']);
@@ -580,6 +666,12 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
     }
     await record({ type: 'smart-test', action: kind, ok: true, devices: started });
     await writeStatus({});
+  }
+
+  // Geçmişe yazılan ayar isteğinde token yerine yalnızca değiştiği belirtilir.
+  function withoutToken(settings) {
+    if (!settings.githubBackup || !('token' in settings.githubBackup)) return settings;
+    return { ...settings, githubBackup: { ...settings.githubBackup, token: settings.githubBackup.token ? 'changed' : 'removed' } };
   }
 
   return { processQueue, smartTest, applySettings, readQueue, files, commands, setPlatform: (p) => (platform = p) };

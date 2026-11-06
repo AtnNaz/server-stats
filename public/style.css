@@ -389,7 +389,8 @@ body[data-route="gecmis"] [data-pages]:not([data-pages~="gecmis"]),
 body[data-route="terminal"] [data-pages]:not([data-pages~="terminal"]),
 body[data-route="yapay-zeka"] [data-pages]:not([data-pages~="yapay-zeka"]),
 body[data-route="gunlukler"] [data-pages]:not([data-pages~="gunlukler"]),
-body[data-route="guvenlik"] [data-pages]:not([data-pages~="guvenlik"]) { display: none !important; }
+body[data-route="guvenlik"] [data-pages]:not([data-pages~="guvenlik"]),
+body[data-route="yedekler"] [data-pages]:not([data-pages~="yedekler"]) { display: none !important; }
 
 /* Bölüme özel genişlikler */
 body[data-route="depolama"] #disk-card,
@@ -1034,3 +1035,20 @@ div.tm-cell { background: color-mix(in srgb, var(--accent) 11%, var(--surface));
 .sec-protect { margin-top: 12px; }
 .day-bar .mini, .usage-bar .mini { display: block; width: auto; }
 .usage-cols .link-btn { text-align: left; }
+
+/* GitHub yedeği */
+.bk-kpis { margin: 4px 0 0; }
+.bk-kpis .kpi { padding: 12px 14px; background: var(--surface-2); box-shadow: none; }
+.bk-kpis .kpi-value { font-size: 22px; }
+.bk-kpis .kpi-value .tag { font-size: 13px; padding: 3px 10px; }
+.kpi-label { margin-bottom: 6px; color: var(--ink-2); font-size: 12.5px; font-weight: 550; }
+.bk-progress { display: grid; gap: 6px; margin-bottom: 12px; }
+.bk-empty { display: grid; justify-items: start; gap: 10px; }
+a.btn { text-decoration: none; }
+.gh-switches { display: flex; flex-wrap: wrap; gap: 10px 20px; }
+.gh-token-row { display: flex; align-items: center; gap: 10px; margin-top: 6px; width: 100%; }
+.gh-token-row .btn[hidden] { display: none; }
+.gh-help { margin-top: 6px; font-size: 12.5px; color: var(--ink-2); }
+.gh-help summary { cursor: pointer; color: var(--accent); font-weight: 550; }
+.gh-help ol { margin: 8px 0 0; padding-left: 20px; display: grid; gap: 4px; }
+[data-section="github"] .form-control .input.wide { flex: 1 1 260px; max-width: 440px; }

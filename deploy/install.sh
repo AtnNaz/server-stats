@@ -192,6 +192,15 @@ else
   echo "Bilgi: python3 yok; panel terminali için gerekli: sudo $(pkg_hint python3)"
 fi
 
+# GitHub yedeği: kendi yetkisiz kullanıcısıyla çalışan servis. Zamanlayıcıyı ve yedek klasörünü
+# panelin Ayarlar → GitHub yedekleme bölümünden root yardımcısı kurar.
+if ! id serverhealth-backup >/dev/null 2>&1; then
+  useradd --system --no-create-home --home-dir /var/lib/serverhealth-backup --shell "$(command -v nologin || echo /bin/false)" serverhealth-backup
+fi
+sed "s|@NODE@|$NODE_BIN|g" "$APP_DIR/deploy/serverhealth-github.service" > /etc/systemd/system/serverhealth-github.service
+chmod 0644 /etc/systemd/system/serverhealth-github.service
+command -v git >/dev/null || echo "Bilgi: git yok; GitHub yedeği için gerekli: sudo $(pkg_hint git)"
+
 # Disk alanı analizi, günlük görüntüleyici ve güvenlik sayfası: root'a ait, yalnızca okuyan sorgu
 # yardımcısı. Soket yalnızca panelin grubuna açıktır; her bağlantıda kısa ömürlü bir süreç başlar.
 install -m 0644 "$APP_DIR/deploy/serverhealth-query.socket" /etc/systemd/system/serverhealth-query.socket
