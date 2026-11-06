@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile, lstat } from 'node:fs/promises';
+import { chmod, mkdir, readFile, readdir, rename, rm, stat, writeFile, lstat } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -64,10 +64,12 @@ export function runGit(args, { cwd, env = {}, timeout = 60 * 60_000 } = {}) {
 const exists = (p) => lstat(p).then(() => true, () => false);
 const readJson = (p, fallback) => readFile(p, 'utf8').then((t) => JSON.parse(t), () => fallback);
 
-async function writeJson(file, data) {
+// mode verilirse (panelin okuyacağı durum dosyaları) umask'tan bağımsız olarak uygulanır.
+async function writeJson(file, data, mode = null) {
   await mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp`;
   await writeFile(tmp, `${JSON.stringify(data, null, 2)}\n`);
+  if (mode != null) await chmod(tmp, mode);
   await rename(tmp, file);
 }
 
@@ -150,7 +152,7 @@ export function createGithubBackup({ config, token = '', stateDir, fetchImpl = f
 
   async function saveStatus(patch) {
     status = { ...status, ...patch, updated: now(), rate };
-    await writeJson(statusFile, status);
+    await writeJson(statusFile, status, 0o644);
   }
 
   // --- Repo listesi ---
@@ -370,23 +372,28 @@ export function createGithubBackup({ config, token = '', stateDir, fetchImpl = f
       }
     }
 
+    // GitHub istek sınırına takılan kısım hata sayılmaz: "bekliyor" olarak işaretlenir ve bir sonraki
+    // çalışmada alınır; o ana kadar bilinen sayılar korunur.
+    result.pending = [];
     const api = async (label, fn) => {
       try {
         return await fn();
       } catch (err) {
-        result.errors.push(`${label}: ${err.code ?? err.message}`);
+        if (err.code === 'rate_limited') result.pending.push(label);
+        else result.errors.push(`${label}: ${err.code ?? err.message}`);
         return null;
       }
     };
     const rels = await api('release', () => backupReleases(repo, base));
     if (rels) Object.assign(result, { releases: rels.releases, releasesDeleted: rels.deleted, assets: rels.assets });
+    else if (prev?.last) Object.assign(result, { releases: prev.last.releases, releasesDeleted: prev.last.releasesDeleted, assets: prev.last.assets });
     let since = prev?.issuesSince ?? null;
     if (config.issues) {
       const iss = await api('issue', () => backupIssues(repo, base, since));
       if (iss) {
         result.issues = iss.issues;
         since = iss.since;
-      }
+      } else if (prev?.last) result.issues = prev.last.issues;
     }
     await writeJson(path.join(base, 'repo.json'), {
       id: repo.id,
@@ -483,7 +490,7 @@ export function createGithubBackup({ config, token = '', stateDir, fetchImpl = f
   async function appendRun() {
     const runs = await readJson(runsFile, []);
     runs.push({ startedAt: status.startedAt, finishedAt: status.finishedAt, ok: status.ok, error: status.error, trigger: status.trigger, repos: status.totals?.repos ?? 0, failed: status.totals?.failed ?? 0 });
-    await writeJson(runsFile, runs.slice(-60));
+    await writeJson(runsFile, runs.slice(-60), 0o644);
   }
 
   return { run, request, listRepos };

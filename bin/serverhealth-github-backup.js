@@ -32,7 +32,8 @@ async function main() {
   const s = await backup.run({ trigger });
   const t = s.totals;
   console.log(t ? `GitHub yedeği bitti: ${t.repos} repo, ${t.failed} hatalı, ${t.releases} release, ${t.issues} issue/PR${s.error ? ` (${s.error})` : ''}` : `GitHub yedeği yapılamadı: ${s.error}`);
-  if (!s.ok) process.exitCode = 1;
+  // İstek sınırı: kod alındı, kalanı bir sonraki çalışmada tamamlanır; servis başarısız sayılmaz.
+  if (!s.ok && s.error !== 'rate_limited') process.exitCode = 1;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

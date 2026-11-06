@@ -171,6 +171,9 @@ test('GitHub yedeği: ayna, release dosyası, issue/PR; force-push, silinen bran
   assert.equal(s.rateReset, 1800000000 * 1000);
   assert.equal(sh(kod, 'rev-parse', 'refs/heads/main'), sh(work, 'rev-parse', 'main'));
   assert.ok(s.lastOk); // önceki başarılı yedek zamanı korunur
+  const pr = s.repos.find((r) => r.name === 'deneme/proje');
+  assert.deepEqual([pr.ok, pr.pending, pr.releases], [true, ['release', 'issue'], 1]); // sınır hata değil, eski sayılar korunur
+  assert.equal(statSync(path.join(stateDir, 'status.json')).mode & 0o777, 0o644); // panel okuyabilmeli
 
   const runs = JSON.parse(readFileSync(path.join(stateDir, 'runs.json'), 'utf8'));
   assert.deepEqual(runs.map((r) => r.ok), [true, true, true, true, false]);

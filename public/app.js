@@ -979,7 +979,8 @@ function renderAlerts(s) {
   // GitHub yedeği açıksa: son çalışma başarısızsa ya da 2 günden uzun süredir başarılı yedek yoksa.
   const b = lastData?.backup;
   if (b && !b.running) {
-    if (b.ok === false) items.push({ level: 'warn', title: t('alert.backupFailed'), detail: backupErrorText(b.error), href: '#/yedekler' });
+    // İstek sınırına takılan yedek bir sonraki çalışmada tamamlanır; yalnızca uzun sürerse uyarılır.
+    if (b.ok === false && b.error !== 'rate_limited') items.push({ level: 'warn', title: t('alert.backupFailed'), detail: backupErrorText(b.error), href: '#/yedekler' });
     else if (b.lastOk && Date.now() - b.lastOk > 48 * 3600_000) items.push({ level: 'warn', title: t('alert.backupStale'), detail: t('alert.backupLast', { ago: fmtAgo(b.lastOk) }), href: '#/yedekler' });
   }
   const box = $('alerts');
@@ -4177,7 +4178,7 @@ function renderBackups() {
               h('td', { class: 'r' }, r.releases != null ? num0.format(r.releases) : '—'),
               h('td', { class: 'r' }, r.issues != null ? num0.format(r.issues) : '—'),
               h('td', { class: 'r' }, r.size != null ? fmtBytes(r.size) : '—'),
-              h('td', { class: 'r' }, r.ok ? h('span', { title: r.skipped ? t('bk.unchangedHint') : '' }, tag('ok', 'ok', t(r.skipped ? 'bk.unchanged' : 'bk.ok'))) : h('span', { title: (r.errors ?? []).join('\n') }, tag('crit', 'crit', t('bk.failed')))),
+              h('td', { class: 'r' }, r.ok && r.pending?.length ? h('span', { title: t('bk.pendingHint') }, tag('warn', 'clock', t('bk.pending'))) : r.ok ? h('span', { title: r.skipped ? t('bk.unchangedHint') : '' }, tag('ok', 'ok', t(r.skipped ? 'bk.unchanged' : 'bk.ok'))) : h('span', { title: (r.errors ?? []).join('\n') }, tag('crit', 'crit', t('bk.failed')))),
             ),
           ),
         )
