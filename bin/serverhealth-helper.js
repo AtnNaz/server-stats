@@ -22,7 +22,7 @@ import {
   onCalendarMonthly,
   TERM_USER,
 } from '../src/system-settings.js';
-import { isNewer, parseVersion, repoFromUrl } from '../src/update-check.js';
+import { isNewer, parseVersion, repoFromUrl, latestFromRedirect } from '../src/update-check.js';
 
 const APP_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MAX_REQUEST = 16 * 1024;
@@ -625,6 +625,8 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
     try {
       const res = await fetchImpl(`https://api.github.com/repos/${repo}/releases/latest`, { headers: { ...headers, Accept: 'application/vnd.github+json' }, redirect: 'error', signal: AbortSignal.timeout(15_000) });
       tag = res.ok ? String((await res.json())?.tag_name ?? '') : '';
+      // İstek sınırı dolduysa sürüm, sınırı olmayan sürüm sayfası yönlendirmesinden okunur.
+      if (!tag && (res.status === 403 || res.status === 429)) tag = (await latestFromRedirect(repo, fetchImpl)).tag;
     } catch {
       tag = '';
     }

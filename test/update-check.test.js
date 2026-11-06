@@ -66,3 +66,17 @@ test('denetim kapalıysa GitHub\'a istek gitmez', async (t) => {
   assert.equal((await updates.check()).enabled, false);
   assert.equal(called, false);
 });
+
+test('API istek sınırı dolunca son sürüm sürüm sayfası yönlendirmesinden okunur', async (t) => {
+  const { calls, updates } = checker(t, () => {
+    if (calls.length === 1) return { status: 403, ok: false, json: async () => ({}) };
+    return { status: 302, ok: false, headers: new Headers({ location: 'https://github.com/sahip/depo/releases/tag/v1.2.0' }) };
+  });
+  const s = await updates.check();
+  assert.deepEqual([s.error, s.latest, s.available, s.url], [null, '1.2.0', true, 'https://github.com/sahip/depo/releases/tag/v1.2.0']);
+  assert.equal(calls[1].url, 'https://github.com/sahip/depo/releases/latest');
+  assert.equal(calls[1].init.redirect, 'manual');
+  // Başka bir yere yönlendirme kabul edilmez.
+  const { updates: bad } = checker(t, () => ({ status: 302, ok: false, headers: new Headers({ location: 'https://kotu.example/releases/tag/v9.9.9' }), json: async () => ({}) }));
+  assert.equal((await bad.check()).error, 'failed');
+});

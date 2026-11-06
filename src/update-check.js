@@ -27,6 +27,22 @@ export function repoFromUrl(url) {
   return m ? `${m[1]}/${m[2]}` : null;
 }
 
+// GitHub API'nin hesapsız istek sınırı (saatte 60, aynı ağdaki herkes için ortak) dolarsa son sürüm,
+// sınır olmayan github.com/<depo>/releases/latest yönlendirmesinden okunur.
+export async function latestFromRedirect(repo, fetchImpl = fetch) {
+  const res = await fetchImpl(`https://github.com/${repo}/releases/latest`, {
+    headers: { 'User-Agent': 'server-stats' },
+    redirect: 'manual',
+    signal: AbortSignal.timeout(10_000),
+  });
+  const location = res.headers?.get?.('location') ?? '';
+  const prefix = `https://github.com/${repo}/releases/tag/`;
+  if (res.status < 300 || res.status >= 400 || !location.startsWith(prefix)) throw new Error(`HTTP ${res.status}`);
+  const tag = decodeURIComponent(location.slice(prefix.length));
+  if (!parseVersion(tag)) throw new Error('geçersiz sürüm etiketi');
+  return { tag, url: `${prefix}${encodeURIComponent(tag)}` };
+}
+
 export function createUpdateChecker({ repo, current, stateDir, enabled = true, fetchImpl = fetch, now = Date.now }) {
   const file = path.join(stateDir, 'update-check.json');
   let state = { checkedAt: null, latest: null, url: null, error: null };
@@ -68,6 +84,10 @@ export function createUpdateChecker({ repo, current, stateDir, enabled = true, f
       signal: AbortSignal.timeout(10_000),
     });
     if (res.status === 404) return { latest: null, url: null }; // henüz sürüm yayınlanmamış
+    if (res.status === 403 || res.status === 429) {
+      const r = await latestFromRedirect(repo, fetchImpl);
+      return { latest: r.tag.replace(/^v/, ''), url: r.url };
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const body = await res.json();
     const latest = String(body?.tag_name ?? '').replace(/^v/, '');
