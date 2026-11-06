@@ -20,8 +20,13 @@ async function startServer(t) {
   );
   const env = { ...process.env, STATE_DIRECTORY: path.join(dir, 'state') };
   const child = spawn(process.execPath, ['src/server.js', '--config', file], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
-  t.after(() => {
-    child.kill();
+  t.after(async () => {
+    // Sunucu kapanırken oturum dosyasını yazar; klasör ancak süreç bitince silinir.
+    if (child.exitCode === null) {
+      const exited = new Promise((resolve) => child.once('exit', resolve));
+      child.kill();
+      await exited;
+    }
     rmSync(dir, { recursive: true, force: true });
   });
   await new Promise((resolve, reject) => {

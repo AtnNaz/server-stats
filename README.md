@@ -81,8 +81,7 @@ Panel kurulduğu makineyi kendisi tanır; sunucuya özgü bir ayar gerektirmez:
 
 ### Oturumlar
 
-- "Beni hatırla" seçilirse oturum 30 gün, seçilmezse tarayıcı kapanana kadar (en çok 12 saat) sürer.
-- Oturumlar bellekte tutulur. Servis yeniden başlatıldığında ya da güncellendiğinde herkesin yeniden giriş yapması gerekir.
+- "Beni hatırla" seçilirse oturum 30 gün sürer ve panel kullanıldıkça yeniden 30 güne uzar; seçilmezse tarayıcı kapanana kadar (en çok 12 saat) sürer. Oturumlar panelin durum klasöründe (`sessions.json`, yalnızca panel kullanıcısı okuyabilir) saklandığı için panel güncellenince ya da sunucu yeniden başlayınca kapanmaz. Dosyada çerezdeki belirtecin kendisi değil yalnızca özeti durur. Şifre değişince (arayüzden ya da `config.json`'dan) bütün eski oturumlar geçersiz olur.
 - Çıkış için sağ üstteki kullanıcı menüsünden **Çıkış yap**'ı seçin.
 
 ### Güncelleme

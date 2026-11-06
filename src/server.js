@@ -13,7 +13,7 @@ import { createAuth, hashPassword } from './auth.js';
 import { createSettingsStore, effectiveConfig, publicSettings, validatePanelSettings } from './settings.js';
 import { validateRequest, MODEL_NAME } from './system-settings.js';
 import { setLanguage } from './i18n.js';
-import { createSessions } from './sessions.js';
+import { createSessions, authKeyOf } from './sessions.js';
 import { createSampler } from './sampler.js';
 import { createUpdateChecker, repoFromUrl } from './update-check.js';
 import { createHistoryStore, RANGES } from './history-store.js';
@@ -195,7 +195,8 @@ function main() {
   setLanguage(effective.language);
 
   let auth = createAuth(effective.auth);
-  const sessions = createSessions();
+  // Oturumlar durum klasöründe saklanır: "beni hatırla" panel yeniden başlayınca da geçerli kalır.
+  const sessions = createSessions({ file: path.join(stateDir, 'sessions.json'), authKey: authKeyOf(effective.auth.username, effective.auth.passwordHash) });
   const history = createHistoryStore({ dir: path.join(stateDir, 'history'), retentionDays: config.history.retentionDays });
   const samplerHooks = { onSample: (snapshot) => history.add(snapshot) };
   let sampler = createSampler(effective, samplerHooks);
@@ -655,6 +656,11 @@ function main() {
     if (asset?.public) return sendAsset(req, res, asset);
 
     let user = session?.user;
+    // Hatırlanan oturum kullanıldıkça çerezin süresi yenilenir.
+    if (session) {
+      const renewed = sessions.renew(req.headers.cookie, { secure: isSecure(req) });
+      if (renewed) res.setHeader('Set-Cookie', renewed);
+    }
     if (!user && req.headers.authorization) {
       const result = await auth.check(req.headers.authorization, clientIp(req));
       if (result.status === 429) {
@@ -768,7 +774,7 @@ function main() {
     await settingsStore.setPasswordHash(await hashPassword(next), config.auth.passwordHash);
     await applySettings(previous);
     auth = createAuth(effective.auth);
-    sessions.destroyOthers(req.headers.cookie);
+    sessions.destroyOthers(req.headers.cookie, authKeyOf(effective.auth.username, effective.auth.passwordHash));
     console.log('Panel şifresi arayüzden değiştirildi; diğer oturumlar kapatıldı.');
     return sendJson(req, res, 200, { ok: true });
   }
@@ -869,6 +875,7 @@ function main() {
     updates.stop();
     terminals.closeAll();
     history.flush();
+    sessions.flush();
     server.close(() => process.exit(0));
     server.closeAllConnections?.();
     setTimeout(() => process.exit(0), 3000).unref();
