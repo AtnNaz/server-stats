@@ -157,7 +157,7 @@ Oturum yoksa `/api/stats` 401 döndürür; sayfa istekleri ise giriş ekranına 
 
 ## Günlük rapor (Ollama)
 
-Sunucuda [Ollama](https://ollama.com) kuruluysa panel her gün son 24 saatin sistem kayıtlarını özetleyip yerel bir modele yorumlatabilir. Ayarlar → Günlük rapor'dan açılır; saat ve model (Ollama'da yüklü modeller listelenir) oradan seçilir. Raporlar sol menüdeki **Raporlar** sayfasında 30 gün saklanır; "Şimdi oluştur" ile istendiğinde de hazırlanır.
+Sunucuda [Ollama](https://ollama.com) kuruluysa panel her gün son 24 saatin sistem kayıtlarını özetleyip yerel bir modele yorumlatabilir. Ayarlar → Günlük rapor'dan açılır; saat ve model (Ollama'da yüklü modeller listelenir) oradan seçilir. Raporlar sol menüdeki **Raporlar** sayfasında 30 gün saklanır; "Şimdi oluştur" ile istendiğinde de hazırlanır. **PDF indir** düğmesi raporu yazdırma penceresinde A4'e uygun, açık renkli bir düzende açar; hedef olarak "PDF olarak kaydet" seçilir (Türkçe karakterler korunur, ek bir program gerekmez).
 
 - Rakamlar (başarısız SSH ve sudo girişleri, çöken servisler, bellek yetmediği için kapatılan süreçler, disk hataları, en sık uyarılar) kodla hesaplanır; model yalnızca bu özeti yorumlar ve öneri yazar. 3-4B boyutunda bir model yeterlidir.
 - Modele her diskin rolü (sistem diski, veri diski, kullanılmayan disk), SMART sayaçları (taşınan, okunamayan ve düzeltilemeyen sektörler, NVMe ortam hataları) ve bu sayaçların günler içindeki değişimi de verilir; böylece sabit kalan bir veri diski uyarısı acil durum gibi gösterilmez. Sayaç geçmişi `/var/lib/serverhealth/reports/smart-history.json` dosyasında tutulur.

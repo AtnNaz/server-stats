@@ -2255,7 +2255,7 @@ function factTable(title, head, rows) {
     'div',
     { class: 'report-section' },
     h('h3', null, title),
-    h('table', { class: 'report-table' }, h('thead', null, h('tr', null, head.map(([label]) => h('th', null, label)))), h('tbody', null, rows.map((r) => h('tr', null, head.map(([, key, cls]) => h('td', cls ? { class: cls } : null, r[key] ?? '—')))))),
+    h('table', { class: 'report-table' }, h('thead', null, h('tr', null, head.map(([label, , cls]) => h('th', cls ? { class: cls } : null, label)))), h('tbody', null, rows.map((r) => h('tr', null, head.map(([, key, cls]) => h('td', cls ? { class: cls } : null, r[key] ?? '—')))))),
   );
 }
 
@@ -2297,7 +2297,7 @@ function renderReport(r) {
     h(
       'article',
       { class: 'card' },
-      h('div', { class: 'report-head' }, h('h2', null, dayFormat.format(reportDate(r.date))), st ? tag(st[0], st[0], t(st[1])) : null, h('div', { class: 'actions' }, genStatus, generate)),
+      h('div', { class: 'report-head' }, h('h2', null, dayFormat.format(reportDate(r.date))), st ? tag(st[0], st[0], t(st[1])) : null, h('div', { class: 'actions' }, genStatus, pdfButton(r), generate)),
       h('p', { class: 'muted small' }, t('rep.meta', { model: r.model ?? '—', time: dateTimeFormat.format(new Date(r.createdAt)), seconds: Math.max(1, Math.round((r.durationMs ?? 0) / 1000)) })),
       ai,
       h('div', { class: 'report-section' }, h('h3', null, t('rep.facts')), h('div', { class: 'fact-tiles' }, tiles.map(([v, k]) => h('div', null, h('b', null, num0.format(v)), h('span', null, t(k)))))),
@@ -2310,12 +2310,58 @@ function renderReport(r) {
       factTable(t('rep.tDisk'), [[t('rep.cMessage'), 'message', 'sample'], [t('rep.cCount'), 'count', 'num']], f.diskErrors),
       factTable(t('rep.tSmart'), [[t('rep.cDisk'), 'disk']], (f.smartFailing ?? []).map((disk) => ({ disk }))),
       factTable(
+        t('rep.tDisks'),
+        [[t('rep.cDisk'), 'disk'], [t('rep.cRole'), 'role'], [t('rep.cCounters'), 'counters'], [t('rep.cTrend'), 'trend']],
+        (f.disks ?? []).map((d) => ({
+          disk: `${d.device}${d.model ? ` · ${d.model}` : ''}`,
+          role: t(`rep.role.${d.role}`),
+          counters: Object.entries(d.counters ?? {})
+            .filter(([, v]) => v > 0)
+            .map(([k, v]) => `${t(`rep.counter.${k}`)} ${num0.format(v)}`)
+            .join(' · ') || t('rep.noBadSectors'),
+          trend: d.trend ? t(`rep.trend.${d.trend}`, { since: d.stableSince ?? '' }) : '—',
+        })),
+      ),
+      factTable(
         t('rep.tGroups', { n: f.groupCount ?? 0 }),
         [[t('rep.cUnit'), 'unit'], [t('rep.cCount'), 'count', 'num'], [t('rep.cMessage'), 'sample', 'sample']],
         f.groups,
       ),
     ),
   );
+}
+
+// PDF: tarayıcının yazdırma penceresi yalnızca raporu, A4'e uygun açık renkli bir düzende basar
+// ("PDF olarak kaydet"). Önerilen dosya adı sayfa başlığından gelir.
+function pdfButton(r) {
+  const b = button(t('rep.pdf'), null, () => printReport(r));
+  b.prepend(icon('download'));
+  b.title = t('rep.pdfHint');
+  return b;
+}
+
+function printReport(r) {
+  const article = $('report-detail').querySelector('article');
+  if (!article) return;
+  const root = h(
+    'div',
+    { id: 'print-root' },
+    h('div', { class: 'print-head' }, h('strong', null, t('rep.printTitle')), h('span', null, [hostName, dayFormat.format(reportDate(r.date))].filter(Boolean).join(' · '))),
+    article.cloneNode(true),
+  );
+  for (const el of root.querySelectorAll('.actions')) el.remove();
+  document.body.append(root);
+  document.body.classList.add('print-report');
+  const title = document.title;
+  document.title = `node-stats-${t('rep.fileWord')}-${hostName ?? 'sunucu'}-${r.date}`;
+  const done = () => {
+    document.title = title;
+    document.body.classList.remove('print-report');
+    root.remove();
+    window.removeEventListener('afterprint', done);
+  };
+  window.addEventListener('afterprint', done);
+  window.print();
 }
 
 function renderReportDays() {

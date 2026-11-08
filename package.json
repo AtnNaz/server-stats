@@ -1,6 +1,6 @@
 {
   "name": "server-stats",
-  "version": "1.3.17",
+  "version": "1.3.18",
   "description": "Linux sunucular için şifre korumalı, canlı güncellenen sağlık paneli",
   "author": {
     "name": "Ali Toprak Naz",
