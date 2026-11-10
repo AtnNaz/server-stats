@@ -15,6 +15,7 @@ Geliştirici: [Ali Toprak Naz](https://github.com/AtnNaz) · Lisans: [PolyForm N
 - **Disk alanı analizi:** Depolama sayfasında bir diski taratıp hangi klasörün ne kadar yer kapladığını kutu haritasında görürsünüz; klasörlere tıklayarak inilir, en büyük dosyalar listelenir (bkz. [Disk alanı, günlükler ve güvenlik](#disk-alanı-günlükler-ve-güvenlik))
 - **Günlükler:** sistem günlüğü, tek bir servis, çekirdek ya da Docker konteyneri kayıtları; önem derecesi, zaman aralığı ve metinle süzülür, canlı izlenebilir
 - **GitHub yedeği:** Ayarlar'a GitHub kullanıcı adınızı girersiniz; repolarınız her gün bu sunucuya kopyalanır: bütün commit'ler, branch'ler, tag'ler, release'ler (notları ve dosyalarıyla), isteğe bağlı issue/PR'lar ve wiki. GitHub'da silinen hiçbir şey yedekten silinmez (bkz. [GitHub yedeği](#github-yedeği))
+- **Servis izleme:** İzleme sayfasında eklediğin web adreslerine (HTTP/HTTPS) ya da sunucu:port hedeflerine (TCP) 30 saniye–5 dakikada bir bağlanılır; yanıt süresi, son 24 saatin durum şeridi, 24 saat / 7 gün / 30 gün çalışma yüzdesi ve kesinti listesi gösterilir. Bir hedef üst üste iki denetimde yanıt vermezse Genel bakış'ta uyarı çıkar (bkz. [Servis izleme](#servis-izleme))
 - **Güvenlik:** dinlenen portlar ve hangi programa/konteynere ait oldukları, kime açık oldukları (bu makine, Tailscale, bütün ağlar), SSH ayarları, başarısız ve başarılı girişler, oturum açabilen kullanıcılar ve bunlardan çıkan öneriler
 - **İnternet hızı:** Ağ sayfasından tek tıkla hız testi (sunucu ile Cloudflare arasında indirme, yükleme, gecikme); isteğe bağlı 1–24 saatte bir otomatik test ve geçmiş grafiği
 - **Güncelleme önizlemesi:** Ayarlar → Güncellemeler'de bekleyen paketlerin listesi (güvenlik güncellemeleri işaretli) ve yerel modelle kısa bir özet
@@ -22,7 +23,7 @@ Geliştirici: [Ali Toprak Naz](https://github.com/AtnNaz) · Lisans: [PolyForm N
 - **Terminal:** sunucunun komut satırı tarayıcıda (htop, nano, sudo çalışır); seçtiğiniz kullanıcıyla açılır, varsayılan kapalıdır (bkz. [Terminal](#terminal))
 - **Yapay zekâ:** sunucudaki [Ollama](https://ollama.com) ile sohbet, model indirme/silme ve hız testi; hiçbir şey dışarı gönderilmez. Sohbetler sunucuda saklanır (`/var/lib/serverhealth-panel/chats`), böylece başka bir cihazdan da devam edilir; ekran kartı belleğine sığan modeller önerilir. Model sunucunun anlık durumunu (diskler, SMART, sıcaklık, ekran kartı, servisler, güncellemeler, son rapor) her zaman görür. "Komut çalıştırma" açıksa sorunları araştırmak için kendisi komut da çalıştırabilir (bkz. [Yapay zekâ komutları](#yapay-zekâ-komutları))
 
-Panel sol menüden bölümlere ayrılır (Genel bakış, Geçmiş, Ekran kartı, Depolama, Ağ, Süreçler, Servisler, Günlükler, Güvenlik, Yedekler, Terminal, Yapay zekâ, Raporlar); menüdeki rozetler sorunlu bölümleri işaret eder. Birkaç saniyede bir kendini günceller; canlı grafikler son 10 dakikayı, Geçmiş sayfası son 30 günü gösterir. Giriş ekranından oturum açılır; aynı veriler `/api/stats` adresinden JSON olarak da alınabilir (bkz. [API](#api)).
+Panel sol menüden bölümlere ayrılır (Genel bakış, Geçmiş, Ekran kartı, Depolama, Ağ, İzleme, Süreçler, Servisler, Günlükler, Güvenlik, Yedekler, Terminal, Yapay zekâ, Raporlar); menüdeki rozetler sorunlu bölümleri işaret eder. Birkaç saniyede bir kendini günceller; canlı grafikler son 10 dakikayı, Geçmiş sayfası son 30 günü gösterir. Giriş ekranından oturum açılır; aynı veriler `/api/stats` adresinden JSON olarak da alınabilir (bkz. [API](#api)).
 
 Hiçbir npm paketine ihtiyaç duymaz; yalnızca Node.js'in kendi modüllerini kullanır (terminal ekranı için [xterm.js](https://xtermjs.org) dosyaları `public/vendor` içinde gelir, MIT lisanslı) ve bilgileri doğrudan `/proc`, `/sys` ve `systemctl` üzerinden okur. Kendiliğinden yapılan tek dış bağlantı, iki günde bir GitHub'dan son sürüm numarasını sormaktır; bu istekte sunucuya dair hiçbir bilgi gönderilmez ve `"updateCheck": false` ile kapatılabilir. İnternet hız testi yalnızca siz başlattığınızda ya da Ağ sayfasında otomatik testi açtığınızda Cloudflare'in hız testi sunucusuna (`speed.cloudflare.com`) bağlanır.
 
@@ -186,6 +187,15 @@ Bu üç sayfa root yetkisi ister (her klasörü görebilmek, sistem günlüğün
 - **Disk alanı:** dosyaların içeriği okunmaz, yalnızca adları ve diskte kapladıkları yer. Tarama başka disklere geçmez (bağlı diskler ayrıca listelenir), sabit bağlantıları bir kez sayar ve en fazla 150 saniye sürer. Son 8 tarama 30 dakika panelin belleğinde tutulur.
 - **Günlükler:** Docker konteyner kayıtları `json-file` sürücüsüyle yazılan dosyalardan okunur; panel servisinin `docker` grubunda olması gerekmez. Konteyner kayıtlarında önem derecesi olmadığı için satırdaki `ERROR`, `WARN` gibi sözcüklerden tahmin edilir.
 - **Güvenlik:** öneriler panelde hesaplanır; panel hiçbir ayarı değiştirmez. "Bütün ağlar" yerel ağdaki herkesin, modemde port yönlendirmesi varsa internetin bağlanabileceği anlamına gelir.
+
+## Servis izleme
+
+**İzleme** sayfasındaki **Hedef ekle** ile bir ad, tür ve adres girilir:
+
+- **HTTP / HTTPS:** adres yanıt verirse ayakta sayılır. 5xx yanıtları ve bağlantı hataları kesintidir; giriş isteyen paneller (401, 302) ayakta sayılır.
+- **TCP portu:** `sunucu:port` biçiminde (ör. `127.0.0.1:5432`); porta bağlanılabiliyorsa ayaktadır.
+
+Denetimler panelin kendisinden, yani sunucudan yapılır; aynı makinedeki servisler için `127.0.0.1` kullanılabilir. Tek bir başarısız denetim kesinti sayılmaz, üst üste iki tanesi sayılır; kesinti ilk başarısız denetimden başlatılır ve ilk başarılı denetimde kapanır. Sonuçlar panelin durum klasöründe (`/var/lib/serverhealth-panel/uptime`) 31 gün saklanır. En fazla 30 hedef eklenebilir.
 
 ## GitHub yedeği
 

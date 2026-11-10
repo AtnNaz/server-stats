@@ -24,6 +24,7 @@ import { buildServerContext } from './server-context.js';
 import { createChatStore } from './chat-store.js';
 import { updateSummaryMessages } from './update-summary.js';
 import { createSpeedtest } from './speedtest.js';
+import { createUptime } from './uptime.js';
 import { upgrade } from './websocket.js';
 import { createTerminals, terminalAvailable } from './terminal.js';
 import { runQuery, queryAvailable } from './query.js';
@@ -233,6 +234,25 @@ function main() {
   const ollama = createOllama({ url: config.ollama.url });
   const chats = createChatStore({ dir: path.join(stateDir, 'chats') });
   const speedtest = createSpeedtest({ dir: stateDir });
+  // Servis izleme: tanımlanan adreslere düzenli bağlanır; sonuçlar panelin durum klasöründe.
+  const uptime = createUptime({ dir: path.join(stateDir, 'uptime') });
+  uptime.start().catch((err) => console.warn(`Servis izleme başlatılamadı: ${err.message}`));
+
+  async function handleUptimeSave(req, res) {
+    const body = await readJsonBody(req, res, 32 * 1024);
+    if (!body) return;
+    const saved = await uptime.save(body.monitors);
+    if (!saved) return sendJson(req, res, 400, { code: 'invalid' });
+    return sendJson(req, res, 200, await uptime.status());
+  }
+
+  async function handleUptimeCheck(req, res) {
+    const body = await readJsonBody(req, res);
+    if (!body) return;
+    const r = await uptime.checkNow(String(body.id ?? ''));
+    if (!r) return sendJson(req, res, 404, { code: 'not_found' });
+    return sendJson(req, res, 200, await uptime.status());
+  }
 
   // Zamanlanmış hız testi: Ayarlar'da seçilen aralıkla; son testten bu yana süre dolduysa başlar.
   const speedtestTimer = setInterval(async () => {
@@ -643,6 +663,8 @@ function main() {
       if (pathname === '/api/speedtest') return handleSpeedtest(req, res);
       if (pathname === '/api/chats/delete') return handleChatDelete(req, res);
       if (pathname === '/api/disk-usage') return handleDiskUsage(req, res);
+      if (pathname === '/api/uptime/save') return handleUptimeSave(req, res);
+      if (pathname === '/api/uptime/check') return handleUptimeCheck(req, res);
       return send(req, res, 405, TEXT, 'Method not allowed\n', { Allow: 'GET, HEAD' });
     }
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(req, res, 405, TEXT, 'İzin verilmeyen yöntem\n', { Allow: 'GET, HEAD, POST' });
@@ -682,6 +704,7 @@ function main() {
         settings: { language: effective.language, thresholds: effective.thresholds },
         update: update.available ? { latest: update.latest } : null,
         backup: await backupSummary(await readSystemStatus()),
+        uptimeDown: uptime.down(),
         ...sampler.current(),
       });
     }
@@ -733,6 +756,7 @@ function main() {
       }
     }
     if (pathname === '/api/backup') return handleBackup(req, res);
+    if (pathname === '/api/uptime') return sendJson(req, res, 200, await uptime.status());
     if (pathname === '/api/security') return handleSecurity(req, res, new URL(req.url, 'http://localhost').searchParams);
     if (pathname === '/api/services/available') {
       try {
@@ -876,6 +900,7 @@ function main() {
     terminals.closeAll();
     history.flush();
     sessions.flush();
+    uptime.stop();
     server.close(() => process.exit(0));
     server.closeAllConnections?.();
     setTimeout(() => process.exit(0), 3000).unref();

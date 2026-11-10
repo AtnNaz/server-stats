@@ -976,6 +976,10 @@ function renderAlerts(s) {
   }
   items.sort((a, b) => (a.level === 'crit' ? 0 : 1) - (b.level === 'crit' ? 0 : 1));
 
+  // Servis izleme: kesintideki hedefler.
+  for (const m of lastData?.uptimeDown ?? []) {
+    items.push({ level: 'crit', title: t('alert.uptimeDown', { name: m.name }), detail: m.since ? t('alert.uptimeSince', { ago: fmtAgo(m.since) }) : t('up.s.down'), href: '#/izleme' });
+  }
   // GitHub yedeği açıksa: son çalışma başarısızsa ya da 2 günden uzun süredir başarılı yedek yoksa.
   const b = lastData?.backup;
   if (b && !b.running) {
@@ -4273,6 +4277,194 @@ function leaveBackups() {
   clearTimeout(backupState.timer);
 }
 
+// ---------- Servis izleme ----------
+
+const UPTIME_INTERVALS = [30, 60, 120, 300];
+const upState = { data: null, timer: null, editing: null, busy: false };
+
+const UP_STATUS = {
+  up: ['ok', 'ok', 'up.s.up'],
+  flaky: ['warn', 'warn', 'up.s.flaky'],
+  down: ['crit', 'crit', 'up.s.down'],
+  pending: ['', 'clock', 'up.s.pending'],
+};
+
+const pct2Format = new Intl.NumberFormat(locale, { style: 'percent', maximumFractionDigits: 2 });
+const fmtPctUp = (v) => (v == null ? '—' : pct2Format.format(v / 100));
+
+function upReason(last) {
+  if (!last) return '';
+  if (last.ok) return last.code ? `HTTP ${last.code}` : t('up.tcpOk');
+  const key = `up.err.${last.err}`;
+  return last.err ? (I18N.DICT[I18N.lang][key] ? t(key) : last.err) : `HTTP ${last.code}`;
+}
+
+// Son 24 saat, 48 dilim: yeşil ayakta, kırmızı kesinti, gri veri yok.
+function upBar(buckets) {
+  return h(
+    'div',
+    { class: 'up-bar', role: 'img', 'aria-label': t('up.bar') },
+    buckets.map((b) =>
+      h('span', {
+        class: b.n === 0 ? 'none' : b.down ? 'down' : 'up',
+        title: `${historyTimeLabel.format(new Date(b.t))} · ${b.n === 0 ? t('up.noData') : b.down ? t('up.s.down') : t('up.s.up')}${b.ms != null ? ` · ${num0.format(b.ms)} ms` : ''}`,
+      }),
+    ),
+  );
+}
+
+function monitorForm(m, onDone) {
+  const name = inputEl('text', m?.name ?? '', { class: 'wide', maxlength: '40', placeholder: t('up.namePh'), 'aria-label': t('up.name') });
+  const type = selectEl([['http', 'HTTP / HTTPS'], ['tcp', t('up.tcp')]], m?.type ?? 'http');
+  type.setAttribute('aria-label', t('up.type'));
+  const target = inputEl('text', m?.target ?? '', { class: 'wide mono', maxlength: '300', spellcheck: 'false', 'aria-label': t('up.target') });
+  const interval = selectEl(UPTIME_INTERVALS.map((s) => [s, s < 60 ? t('up.everySec', { n: s }) : t('up.everyMin', { n: s / 60 })]), m?.interval ?? 60);
+  interval.setAttribute('aria-label', t('up.interval'));
+  const status = saveStatus();
+  const hint = () => (target.placeholder = type.value === 'http' ? 'http://127.0.0.1:3000' : '127.0.0.1:5432');
+  type.addEventListener('change', hint);
+  hint();
+  const save = button(t('set.save'), 'accent', async () => {
+    const item = { ...(m?.id && { id: m.id }), name: name.value.trim(), type: type.value, target: target.value.trim(), interval: Number(interval.value) };
+    if (!item.name) return status.set('err', t('up.needName'));
+    if (!item.target) return status.set('err', t('up.needTarget'));
+    const list = (upState.data?.monitors ?? []).map(({ id, name: n, type: ty, target: tg, interval: iv }) => ({ id, name: n, type: ty, target: tg, interval: iv }));
+    const i = list.findIndex((x) => x.id === m?.id);
+    if (i >= 0) list[i] = item;
+    else list.push(item);
+    save.disabled = true;
+    const res = await api('/api/uptime/save', { monitors: list });
+    save.disabled = false;
+    if (!res.ok) return status.set('err', t('up.invalid'));
+    upState.data = res.data;
+    onDone();
+  });
+  const cancel = button(t('up.cancel'), null, onDone);
+  return h(
+    'div',
+    { class: 'up-form' },
+    h('div', { class: 'up-form-grid' }, h('label', null, h('span', null, t('up.name')), name), h('label', null, h('span', null, t('up.type')), type), h('label', { class: 'wide-col' }, h('span', null, t('up.target')), target), h('label', null, h('span', null, t('up.interval')), interval)),
+    h('p', { class: 'muted small' }, t('up.formHint')),
+    h('div', { class: 'form-actions' }, save, cancel, status.el),
+  );
+}
+
+async function removeMonitor(m) {
+  if (!(await confirmDialog(t('up.deleteTitle'), t('up.deleteText', { name: m.name }), t('up.delete')))) return;
+  const list = upState.data.monitors.filter((x) => x.id !== m.id).map(({ id, name, type, target, interval }) => ({ id, name, type, target, interval }));
+  const res = await api('/api/uptime/save', { monitors: list });
+  if (res.ok) upState.data = res.data;
+  renderUptime();
+}
+
+function renderUptime() {
+  const root = $('uptime-root');
+  const d = upState.data;
+  if (!d) return fill(root, h('article', { class: 'card' }, placeholder(t('common.loading'))));
+  const add = button(t('up.add'), 'accent', () => {
+    upState.editing = 'new';
+    renderUptime();
+  });
+  add.prepend(icon('target'));
+  const down = d.monitors.filter((m) => m.status === 'down').length;
+  const head = h(
+    'article',
+    { class: 'card span-3' },
+    h(
+      'div',
+      { class: 'card-head' },
+      h('h2', { class: 'card-title' }, icon('globe'), h('span', null, t('up.title'))),
+      h('span', { class: 'card-meta' }, d.monitors.length ? (down ? t('up.metaDown', { n: d.monitors.length, down }) : t('up.metaOk', { n: d.monitors.length })) : ''),
+      h('div', { class: 'card-tools' }, add),
+    ),
+    upState.editing === 'new' ? monitorForm(null, () => ((upState.editing = null), renderUptime())) : null,
+    d.monitors.length
+      ? h(
+          'ul',
+          { class: 'up-list' },
+          d.monitors.map((m) => {
+            if (upState.editing === m.id) return h('li', null, monitorForm(m, () => ((upState.editing = null), renderUptime())));
+            const [cls, ic, label] = UP_STATUS[m.status] ?? UP_STATUS.pending;
+            const check = button(t('up.checkNow'), null, async () => {
+              check.disabled = true;
+              const res = await api('/api/uptime/check', { id: m.id });
+              if (res.ok) upState.data = res.data;
+              renderUptime();
+            });
+            const edit = button(t('up.edit'), null, () => {
+              upState.editing = m.id;
+              renderUptime();
+            });
+            const del = button(t('up.delete'), null, () => removeMonitor(m));
+            return h(
+              'li',
+              { class: `up-item ${m.status}` },
+              h(
+                'div',
+                { class: 'up-main' },
+                h('div', { class: 'up-title' }, tag(cls, ic, t(label)), h('strong', null, m.name), h('span', { class: 'mono muted small break' }, m.target)),
+                h(
+                  'div',
+                  { class: 'up-stats' },
+                  h('span', null, h('b', null, m.last?.ms != null ? `${num0.format(m.last.ms)} ms` : '—'), h('small', null, upReason(m.last))),
+                  h('span', null, h('b', null, fmtPctUp(m.uptime24h)), h('small', null, t('up.u24'))),
+                  h('span', null, h('b', null, fmtPctUp(m.uptime7d)), h('small', null, t('up.u7'))),
+                  h('span', null, h('b', null, fmtPctUp(m.uptime30d)), h('small', null, t('up.u30'))),
+                ),
+              ),
+              upBar(m.buckets),
+              h('div', { class: 'up-foot' }, h('span', { class: 'muted small' }, m.last ? t('up.lastCheck', { ago: fmtAgo(m.last.t), every: m.interval < 60 ? t('up.everySec', { n: m.interval }) : t('up.everyMin', { n: m.interval / 60 }) }) : t('up.waiting')), h('span', { class: 'up-actions' }, check, edit, del)),
+            );
+          }),
+        )
+      : upState.editing === 'new'
+        ? null
+        : placeholder(t('up.empty')),
+  );
+
+  const incidents = d.incidents ?? [];
+  const incCard = h(
+    'article',
+    { class: 'card span-3' },
+    h('div', { class: 'card-head' }, h('h2', { class: 'card-title' }, icon('warn'), h('span', null, t('up.incidents')))),
+    incidents.length
+      ? table(
+          [[t('up.service')], [t('up.start')], [t('up.duration'), 'r'], [t('up.reason')]],
+          incidents.map((x) =>
+            h(
+              'tr',
+              null,
+              h('td', null, h('strong', null, x.name)),
+              h('td', { class: 'nowrap' }, dateTimeFormat.format(new Date(x.start))),
+              h('td', { class: 'r' }, x.end ? fmtDuration(Math.max(1, (x.end - x.start) / 1000)) : tag('crit', 'crit', t('up.ongoing'))),
+              h('td', { class: 'muted' }, I18N.DICT[I18N.lang][`up.err.${x.reason}`] ? t(`up.err.${x.reason}`) : x.reason),
+            ),
+          ),
+        )
+      : placeholder(t('up.noIncidents')),
+  );
+  fill(root, h('div', { class: 'grid' }, head, incCard));
+}
+
+async function loadUptime() {
+  clearTimeout(upState.timer);
+  const res = await api('/api/uptime');
+  if (res.ok) upState.data = res.data;
+  // Düzenleme formu açıkken yazılanlar kaybolmasın diye sayfa yeniden çizilmez.
+  if (!upState.editing) renderUptime();
+  if (currentRoute() === 'izleme') upState.timer = setTimeout(loadUptime, 15_000);
+}
+
+function enterUptime() {
+  renderUptime();
+  loadUptime();
+}
+
+function leaveUptime() {
+  clearTimeout(upState.timer);
+  upState.editing = null;
+}
+
 // ---------- Bölümler ve sol menü ----------
 
 const ROUTES = {
@@ -4287,6 +4479,7 @@ const ROUTES = {
   terminal: t('nav.terminal'),
   'yapay-zeka': t('nav.ai'),
   raporlar: t('nav.reports'),
+  izleme: t('nav.uptime'),
   gunlukler: t('nav.logs'),
   guvenlik: t('nav.security'),
   yedekler: t('nav.backups'),
@@ -4345,6 +4538,8 @@ function applyRoute() {
   if (route === 'guvenlik') enterSecurity();
   if (route === 'yedekler') enterBackups();
   else leaveBackups();
+  if (route === 'izleme') enterUptime();
+  else leaveUptime();
   window.scrollTo(0, 0);
   // Gizliyken genişliği sıfır olan grafikler görünür olunca yeniden çizilir.
   requestAnimationFrame(redrawCharts);
