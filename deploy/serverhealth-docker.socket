@@ -1,0 +1,15 @@
+[Unit]
+Description=Node Stats - Docker yardımcı soketi (konteyner listesi, başlat/durdur/yeniden başlat)
+# Yalnızca panel servisinin grubu bağlanabilir; her bağlantı serverhealth-docker@.service'i başlatır.
+
+[Socket]
+ListenStream=/run/serverhealth-docker.sock
+SocketUser=root
+SocketGroup=serverhealth
+SocketMode=0660
+Accept=yes
+MaxConnections=4
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

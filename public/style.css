@@ -391,7 +391,8 @@ body[data-route="yapay-zeka"] [data-pages]:not([data-pages~="yapay-zeka"]),
 body[data-route="gunlukler"] [data-pages]:not([data-pages~="gunlukler"]),
 body[data-route="guvenlik"] [data-pages]:not([data-pages~="guvenlik"]),
 body[data-route="yedekler"] [data-pages]:not([data-pages~="yedekler"]),
-body[data-route="izleme"] [data-pages]:not([data-pages~="izleme"]) { display: none !important; }
+body[data-route="izleme"] [data-pages]:not([data-pages~="izleme"]),
+body[data-route="konteynerler"] [data-pages]:not([data-pages~="konteynerler"]) { display: none !important; }
 
 /* Bölüme özel genişlikler */
 body[data-route="depolama"] #disk-card,
@@ -1123,3 +1124,25 @@ a.btn { text-decoration: none; }
 .dh-chart-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 13px; }
 .dh-chart .chart { height: 150px; }
 @media (max-width: 640px) { .dh-facts { grid-template-columns: repeat(2, auto); } }
+
+/* Konteynerler */
+.ct-group + .ct-group { margin-top: 16px; }
+.ct-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.ct-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px 20px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); }
+.ct-item.exited, .ct-item.created { opacity: .8; }
+.ct-item.dead, .ct-item.restarting { border-color: color-mix(in srgb, var(--warning) 50%, var(--border)); }
+.ct-title { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-bottom: 4px; }
+.ct-title strong { font-size: 15px; }
+.ct-stats { display: grid; grid-template-columns: repeat(4, auto); gap: 4px 20px; align-content: start; }
+.ct-stats span { display: grid; gap: 2px; min-width: 70px; }
+.ct-stats small { color: var(--muted); font-size: 11.5px; }
+.ct-stats b { font-size: 13.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ct-stats .mini { width: 100%; }
+.ct-foot { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.ct-restarts { color: #b07800; }
+.ct-foot .btn { height: 30px; padding: 0 10px; font-size: 12.5px; }
+@media (max-width: 900px) {
+  .ct-item { grid-template-columns: 1fr; }
+  .ct-stats { grid-template-columns: repeat(2, auto); }
+}
+.ct-image { overflow-wrap: anywhere; }

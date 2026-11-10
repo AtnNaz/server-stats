@@ -12,6 +12,7 @@ Geliştirici: [Ali Toprak Naz](https://github.com/AtnNaz) · Lisans: [PolyForm N
 - **Sıcaklık ve fanlar:** işlemci, NVMe diskler, anakart sensörleri ve fan devirleri
 - **Ekran kartı:** NVIDIA kartlarda kullanım, VRAM, sıcaklık, güç ve kartı kullanan süreçler (`nvidia-smi` varsa kendiliğinden açılır)
 - **Docker:** konteynerler ve durumları (isteğe bağlı)
+- **Konteynerler:** bütün Docker konteynerleri Compose projelerine göre gruplanmış hâlde; her birinin durumu, sağlığı, CPU, bellek ve ağ kullanımı, açık kalma süresi, yeniden başlama sayısı ve portları. Başlat / durdur / yeniden başlat düğmeleri, kayıtlarına tek tıkla geçiş ve imajın yeni sürümü çıktığında işaret (bkz. [Konteynerler](#konteynerler))
 - **Disk sağlığı geçmişi:** Depolama sayfasında her diskin sıcaklığı, bozuk sektör sayaçları (taşınan, okunamayan, düzeltilemeyen), SSD aşınması ve yazılan veri 7 gün / 30 gün / 1 yıllık grafiklerle gösterilir. Değerler SMART'tan saatte bir kaydedilir ve 13 ay saklanır. Bir diskin bozuk sektör sayacı son 7 günde artarsa Genel bakış'ta uyarı çıkar; SSD aşınması artıyorsa bu hızla kalan ömür kabaca tahmin edilir
 - **Disk alanı analizi:** Depolama sayfasında bir diski taratıp hangi klasörün ne kadar yer kapladığını kutu haritasında görürsünüz; klasörlere tıklayarak inilir, en büyük dosyalar listelenir (bkz. [Disk alanı, günlükler ve güvenlik](#disk-alanı-günlükler-ve-güvenlik))
 - **Günlükler:** sistem günlüğü, tek bir servis, çekirdek ya da Docker konteyneri kayıtları; önem derecesi, zaman aralığı ve metinle süzülür, canlı izlenebilir
@@ -24,7 +25,7 @@ Geliştirici: [Ali Toprak Naz](https://github.com/AtnNaz) · Lisans: [PolyForm N
 - **Terminal:** sunucunun komut satırı tarayıcıda (htop, nano, sudo çalışır); seçtiğiniz kullanıcıyla açılır, varsayılan kapalıdır (bkz. [Terminal](#terminal))
 - **Yapay zekâ:** sunucudaki [Ollama](https://ollama.com) ile sohbet, model indirme/silme ve hız testi; hiçbir şey dışarı gönderilmez. Sohbetler sunucuda saklanır (`/var/lib/serverhealth-panel/chats`), böylece başka bir cihazdan da devam edilir; ekran kartı belleğine sığan modeller önerilir. Model sunucunun anlık durumunu (diskler, SMART, sıcaklık, ekran kartı, servisler, güncellemeler, son rapor) her zaman görür. "Komut çalıştırma" açıksa sorunları araştırmak için kendisi komut da çalıştırabilir (bkz. [Yapay zekâ komutları](#yapay-zekâ-komutları))
 
-Panel sol menüden bölümlere ayrılır (Genel bakış, Geçmiş, Ekran kartı, Depolama, Ağ, İzleme, Süreçler, Servisler, Günlükler, Güvenlik, Yedekler, Terminal, Yapay zekâ, Raporlar); menüdeki rozetler sorunlu bölümleri işaret eder. Birkaç saniyede bir kendini günceller; canlı grafikler son 10 dakikayı, Geçmiş sayfası son 30 günü gösterir. Giriş ekranından oturum açılır; aynı veriler `/api/stats` adresinden JSON olarak da alınabilir (bkz. [API](#api)).
+Panel sol menüden bölümlere ayrılır (Genel bakış, Geçmiş, Ekran kartı, Depolama, Ağ, İzleme, Süreçler, Servisler, Konteynerler, Günlükler, Güvenlik, Yedekler, Terminal, Yapay zekâ, Raporlar); menüdeki rozetler sorunlu bölümleri işaret eder. Birkaç saniyede bir kendini günceller; canlı grafikler son 10 dakikayı, Geçmiş sayfası son 30 günü gösterir. Giriş ekranından oturum açılır; aynı veriler `/api/stats` adresinden JSON olarak da alınabilir (bkz. [API](#api)).
 
 Hiçbir npm paketine ihtiyaç duymaz; yalnızca Node.js'in kendi modüllerini kullanır (terminal ekranı için [xterm.js](https://xtermjs.org) dosyaları `public/vendor` içinde gelir, MIT lisanslı) ve bilgileri doğrudan `/proc`, `/sys` ve `systemctl` üzerinden okur. Kendiliğinden yapılan tek dış bağlantı, iki günde bir GitHub'dan son sürüm numarasını sormaktır; bu istekte sunucuya dair hiçbir bilgi gönderilmez ve `"updateCheck": false` ile kapatılabilir. İnternet hız testi yalnızca siz başlattığınızda ya da Ağ sayfasında otomatik testi açtığınızda Cloudflare'in hız testi sunucusuna (`speed.cloudflare.com`) bağlanır.
 
@@ -95,7 +96,7 @@ Elle güncellemek için `cd ~/server-stats && git pull` ile yeni sürümü indir
 ### Kaldırma
 
 ```bash
-sudo systemctl disable --now serverhealth serverhealth-query.socket serverhealth-github.timer serverhealth-smart.timer serverhealth-helper.path serverhealth-helper.timer serverhealth-reboot.timer serverhealth-smarttest-short.timer serverhealth-smarttest-long.timer
+sudo systemctl disable --now serverhealth serverhealth-query.socket serverhealth-docker.socket serverhealth-github.timer serverhealth-smart.timer serverhealth-helper.path serverhealth-helper.timer serverhealth-reboot.timer serverhealth-smarttest-short.timer serverhealth-smarttest-long.timer
 sudo rm -rf /opt/serverhealth /etc/systemd/system/serverhealth* /etc/serverhealth /var/lib/serverhealth /var/lib/serverhealth-panel /var/lib/serverhealth-queue /etc/apt/apt.conf.d/52serverhealth
 sudo systemctl daemon-reload
 sudo userdel serverhealth
@@ -188,6 +189,14 @@ Bu üç sayfa root yetkisi ister (her klasörü görebilmek, sistem günlüğün
 - **Disk alanı:** dosyaların içeriği okunmaz, yalnızca adları ve diskte kapladıkları yer. Tarama başka disklere geçmez (bağlı diskler ayrıca listelenir), sabit bağlantıları bir kez sayar ve en fazla 150 saniye sürer. Son 8 tarama 30 dakika panelin belleğinde tutulur.
 - **Günlükler:** Docker konteyner kayıtları `json-file` sürücüsüyle yazılan dosyalardan okunur; panel servisinin `docker` grubunda olması gerekmez. Konteyner kayıtlarında önem derecesi olmadığı için satırdaki `ERROR`, `WARN` gibi sözcüklerden tahmin edilir.
 - **Güvenlik:** öneriler panelde hesaplanır; panel hiçbir ayarı değiştirmez. "Bütün ağlar" yerel ağdaki herkesin, modemde port yönlendirmesi varsa internetin bağlanabileceği anlamına gelir.
+
+## Konteynerler
+
+**Konteynerler** sayfası Docker konteynerlerini listeler ve başlatıp durdurmayı sağlar. Panel Docker soketine kendisi erişmez (bu fiilen root yetkisi demektir); kurulum betiği `serverhealth-docker.socket` soketini kurar ve her istekte kısa ömürlü bir `serverhealth-docker@` servisi çalışır.
+
+- Yardımcının yapabildikleri sabittir: konteynerleri, kaynak kullanımlarını ve imaj özetlerini okumak; var olan bir konteyneri kimliğiyle başlatmak, durdurmak ya da yeniden başlatmak. Konteyner oluşturamaz, silemez, içinde komut çalıştıramaz, imaj çekemez.
+- Servis root olarak yalnızca Docker soketine bağlanmak için çalışır; hiçbir yetkisi (capability) yoktur, dosya sistemine yazamaz, ağa çıkamaz. Her işlem `journalctl -u 'serverhealth-docker@*'` ve `journalctl -u serverhealth` günlüklerine yazılır.
+- **Yeni sürüm denetimi:** panel her imajın etiketini kayıt sunucusunda (Docker Hub, GitHub, lscr.io ve diğer OCI kayıtları) anonim olarak sorar ve yereldeki özetle karşılaştırır; 6 saatte bir ya da **Güncellemeleri denetle** ile. Sunucuya dair bilgi gönderilmez. Özetle (`@sha256:…`) sabitlenmiş ve yerelde derlenmiş imajlar ayrıca işaretlenir. Güncellemenin kendisi CasaOS ya da `docker compose pull && docker compose up -d` ile yapılır; panel konteyner oluşturmaz.
 
 ## Servis izleme
 
@@ -302,6 +311,7 @@ Let's Encrypt anahtarlarını yalnızca root okuyabildiği için systemd bunlar�
 - **SMART:** Disk sağlığını okumak root yetkisi ister. Panel bunu kendisi yapmaz. `smartmontools` kuruluysa kurulum betiği `serverhealth-smart.timer` zamanlayıcısını kurar: her 10 dakikada bir root olarak `smartctl` çalıştırır, sonucu `/var/lib/serverhealth/smart.json` dosyasına yazar, panel bu dosyayı yetkisiz okur. Toplayıcının ağ erişimi yoktur, dosya sistemine yalnızca bu klasöre yazabilir ve uykudaki diskleri uyandırmaz.
 - NVIDIA kartı olan sunucularda kurulum betiği `/etc/systemd/system/serverhealth.service.d/gpu.conf` dosyasını yazar: servis `/dev` altında yalnızca `/dev/nvidiactl` ve `/dev/nvidiaN` aygıtlarına (ve `/dev/null` gibi temel aygıtlara) erişebilir.
 - `/healthz` adresi şifresizdir ve yalnızca `ok` döndürür; izleme araçları için.
+- **Konteynerler sayfası** Docker soketini panele açmaz; yalnızca listeleme ve başlat/durdur/yeniden başlat yapabilen, yetkisiz kısıtlanmış bir root yardımcısı kullanır (bkz. [Konteynerler](#konteynerler)).
 - **Docker:** Docker soketine erişebilen herkes fiilen root yetkisine sahiptir. `--docker` seçeneği servis kullanıcısını `docker` grubuna ekler. Panel yalnızca konteyner listesini okur, ama uygulamada bir açık bulunursa bu yetki kötüye kullanılabilir. Gerçekten ihtiyacınız varsa açın.
 - Süreç komut satırları bazen parola içerebilir (ör. `mysql -pGizli`). Bunu istemiyorsanız `processes.showCommandLine` değerini `false` yapın.
 - Ağ sayfasındaki port kartı hangi sürecin dinlediğini göstermez. Bu bilgi Güvenlik sayfasında, root'a ait salt okunur sorgu yardımcısı üzerinden gelir (bkz. [Disk alanı, günlükler ve güvenlik](#disk-alanı-günlükler-ve-güvenlik)).

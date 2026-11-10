@@ -18,7 +18,8 @@ const DEFAULTS = {
   auth: { username: '', passwordHash: '' },
   tls: { cert: '', key: '' },
   services: [],
-  docker: { enabled: false, socket: '/var/run/docker.sock' },
+  // helperSocket: Konteynerler sayfasının kullandığı root Docker yardımcısı (panel Docker soketine erişmez).
+  docker: { enabled: false, socket: '/var/run/docker.sock', helperSocket: '/run/serverhealth-docker.sock' },
   gpu: { enabled: true },
   processes: { top: 10, showCommandLine: true },
   network: { hideInterfaces: ['lo', 'veth*', 'br-*', 'docker*', 'virbr*'] },
@@ -66,6 +67,7 @@ function validate(cfg) {
   if (!Array.isArray(cfg.services) || cfg.services.some((s) => typeof s !== 'string' || !UNIT_NAME.test(s)))
     errors.push('services, geçerli systemd birim adlarından oluşan bir liste olmalı (ör. "nginx", "ssh.service")');
   if (typeof cfg.docker.socket !== 'string' || !cfg.docker.socket) errors.push('docker.socket boş olamaz');
+  if (typeof cfg.docker.helperSocket !== 'string' || !path.isAbsolute(cfg.docker.helperSocket)) errors.push('docker.helperSocket mutlak bir yol olmalı');
   if (typeof cfg.gpu.enabled !== 'boolean') errors.push('gpu.enabled true ya da false olmalı');
   if (!isInt(cfg.processes.top, 1, 50)) errors.push('processes.top 1-50 arasında olmalı');
   if (!Array.isArray(cfg.network.hideInterfaces) || cfg.network.hideInterfaces.some((s) => typeof s !== 'string'))

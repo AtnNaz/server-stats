@@ -26,6 +26,7 @@ import { updateSummaryMessages } from './update-summary.js';
 import { createSpeedtest } from './speedtest.js';
 import { createUptime } from './uptime.js';
 import { createDiskHealth, HEALTH_RANGES } from './disk-health.js';
+import { createImageUpdates, validateDockerRequest } from './docker-protocol.js';
 import { upgrade } from './websocket.js';
 import { createTerminals, terminalAvailable } from './terminal.js';
 import { runQuery, queryAvailable } from './query.js';
@@ -389,6 +390,35 @@ function main() {
     });
   }
 
+  // --- Konteynerler: root Docker yardımcısı üzerinden; imaj güncellemelerini panel kendisi denetler ---
+  const imageUpdates = createImageUpdates();
+  const dockerQuery = (request, timeoutMs = 30_000) => runQuery({ socketPath: config.docker.helperSocket, request, timeoutMs });
+  async function dockerOverview(res, req, { forceUpdates = false } = {}) {
+    if (!(await queryAvailable(config.docker.helperSocket))) return sendJson(req, res, 409, { code: 'docker_unavailable' });
+    try {
+      const { containers } = await dockerQuery({ op: 'overview' });
+      if (forceUpdates) await imageUpdates.refresh(containers, { force: true });
+      else imageUpdates.refresh(containers).catch(() => {});
+      return sendJson(req, res, 200, { containers: imageUpdates.annotate(containers), checkingUpdates: imageUpdates.running, at: Date.now() });
+    } catch (err) {
+      return sendJson(req, res, err.code === 'docker_down' ? 503 : 502, { code: err.code === 'unavailable' ? 'docker_unavailable' : err.code ?? 'failed' });
+    }
+  }
+
+  async function handleDockerAction(req, res) {
+    const body = await readJsonBody(req, res);
+    if (!body) return;
+    const request = validateDockerRequest({ op: 'action', action: body.action, id: body.id });
+    if (!request) return sendJson(req, res, 400, { code: 'invalid' });
+    if (!(await queryAvailable(config.docker.helperSocket))) return sendJson(req, res, 409, { code: 'docker_unavailable' });
+    console.log(`Konteyner işlemi: ${request.action} ${request.id} (${clientIp(req)})`);
+    try {
+      return sendJson(req, res, 200, await dockerQuery(request, 90_000));
+    } catch (err) {
+      return sendJson(req, res, err.code === 'not_found' ? 404 : 502, { code: err.code ?? 'failed' });
+    }
+  }
+
   // Bekleyen güncellemelerin yapay zekâ özeti; aynı paket listesi için sonuç bellekte tutulur.
   let updateSummary = null;
   async function handleUpdateSummary(req, res) {
@@ -676,6 +706,12 @@ function main() {
       if (pathname === '/api/chats/delete') return handleChatDelete(req, res);
       if (pathname === '/api/disk-usage') return handleDiskUsage(req, res);
       if (pathname === '/api/uptime/save') return handleUptimeSave(req, res);
+      if (pathname === '/api/docker/action') return handleDockerAction(req, res);
+      if (pathname === '/api/docker/check-updates') {
+        const body = await readJsonBody(req, res);
+        if (!body) return;
+        return dockerOverview(res, req, { forceUpdates: true });
+      }
       if (pathname === '/api/uptime/check') return handleUptimeCheck(req, res);
       return send(req, res, 405, TEXT, 'Method not allowed\n', { Allow: 'GET, HEAD' });
     }
@@ -770,6 +806,7 @@ function main() {
     }
     if (pathname === '/api/backup') return handleBackup(req, res);
     if (pathname === '/api/uptime') return sendJson(req, res, 200, await uptime.status());
+    if (pathname === '/api/docker') return dockerOverview(res, req);
     if (pathname === '/api/disk-health') {
       const range = new URL(req.url, 'http://localhost').searchParams.get('range') ?? '30d';
       if (!Object.hasOwn(HEALTH_RANGES, range)) return sendJson(req, res, 400, { code: 'invalid' });

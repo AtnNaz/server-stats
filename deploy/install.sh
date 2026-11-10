@@ -192,6 +192,14 @@ else
   echo "Bilgi: python3 yok; panel terminali için gerekli: sudo $(pkg_hint python3)"
 fi
 
+# Docker yönetimi: panel Docker soketine erişmez; yalnızca listeleme ve başlat/durdur/yeniden başlat
+# yapabilen, yetkisiz kısıtlanmış bir root yardımcısına soket üzerinden sorar.
+install -m 0644 "$APP_DIR/deploy/serverhealth-docker.socket" /etc/systemd/system/serverhealth-docker.socket
+sed "s|@NODE@|$NODE_BIN|g" "$APP_DIR/deploy/serverhealth-docker@.service" > /etc/systemd/system/serverhealth-docker@.service
+chmod 0644 /etc/systemd/system/serverhealth-docker@.service
+DOCKER_HELPER=0
+if command -v docker >/dev/null || [[ -S /run/docker.sock ]]; then DOCKER_HELPER=1; fi
+
 # GitHub yedeği: kendi yetkisiz kullanıcısıyla çalışan servis. Zamanlayıcıyı ve yedek klasörünü
 # panelin Ayarlar → GitHub yedekleme bölümünden root yardımcısı kurar.
 if ! id serverhealth-backup >/dev/null 2>&1; then
@@ -232,6 +240,10 @@ if (( SMART_ENABLED )); then
 fi
 systemctl enable --now serverhealth-helper.path serverhealth-helper.timer >/dev/null
 systemctl enable serverhealth-query.socket >/dev/null
+if (( DOCKER_HELPER )); then
+  systemctl enable serverhealth-docker.socket >/dev/null
+  systemctl restart serverhealth-docker.socket
+fi
 systemctl restart serverhealth-query.socket
 systemctl start serverhealth-helper.service || echo "Uyarı: sistem durumu okunamadı; ayrıntı: journalctl -u serverhealth-helper" >&2
 systemctl enable serverhealth.service >/dev/null

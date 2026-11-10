@@ -4603,6 +4603,155 @@ async function loadDiskHealth() {
   if (currentRoute() === 'depolama') dhState.timer = setTimeout(loadDiskHealth, 10 * 60_000);
 }
 
+// ---------- Konteynerler (Docker yönetimi) ----------
+
+const ctState = { data: null, error: null, timer: null, busy: new Set(), checking: false };
+const CT_STATE = {
+  running: ['ok', 'ok', 'ct.s.running'],
+  restarting: ['warn', 'warn', 'ct.s.restarting'],
+  paused: ['warn', 'off', 'ct.s.paused'],
+  exited: ['', 'off', 'ct.s.exited'],
+  created: ['', 'off', 'ct.s.created'],
+  dead: ['crit', 'crit', 'ct.s.dead'],
+};
+
+function ctUpdateTag(u) {
+  if (!u) return null;
+  if (u.state === 'available') return h('span', { class: 'tag info', title: t('ct.updateHint') }, icon('download'), t('ct.update.available'));
+  if (u.state === 'current') return h('span', { class: 'tag', title: t('ct.checked', { ago: fmtAgo(u.checkedAt) }) }, icon('ok'), t('ct.update.current'));
+  if (u.state === 'pinned') return h('span', { class: 'tag', title: t('ct.pinnedHint') }, t('ct.update.pinned'));
+  if (u.state === 'local') return h('span', { class: 'tag', title: t('ct.localHint') }, t('ct.update.local'));
+  return h('span', { class: 'tag', title: t('ct.unreachableHint') }, t('ct.update.unknown'));
+}
+
+async function ctAction(c, action) {
+  if (action !== 'start' && !(await confirmDialog(t(`ct.confirm.${action}`, { name: c.name }), t(`ct.confirmText.${action}`), t(`ct.a.${action}`)))) return;
+  ctState.busy.add(c.id);
+  renderContainers();
+  const res = await api('/api/docker/action', { id: c.id, action });
+  ctState.busy.delete(c.id);
+  if (!res.ok) ctState.error = errorBox(t('ct.actionFailed', { name: c.name }));
+  await loadContainers();
+}
+
+function ctRow(c) {
+  const [cls, ic, label] = CT_STATE[c.state] ?? ['', 'off', c.state];
+  const s = c.stats;
+  const busy = ctState.busy.has(c.id);
+  const actions = (c.state === 'running' || c.state === 'restarting' ? ['restart', 'stop'] : ['start']).map((a) => {
+    const b = button(t(`ct.a.${a}`), null, () => ctAction(c, a));
+    b.disabled = busy;
+    return b;
+  });
+  const logs = h('a', { class: 'btn', href: `#/gunlukler/container/${encodeURIComponent(c.name)}` }, t('ct.logs'));
+  const memPct = s?.mem != null && s.memLimit ? (s.mem / s.memLimit) * 100 : null;
+  return h(
+    'li',
+    { class: `ct-item ${c.state}` },
+    h(
+      'div',
+      { class: 'ct-main' },
+      h(
+        'div',
+        { class: 'ct-title' },
+        tag(cls, ic, busy ? t('ct.working') : t(label)),
+        h('strong', null, c.name),
+        c.health ? h('span', { class: `tag ${c.health === 'healthy' ? 'ok' : c.health === 'unhealthy' ? 'crit' : ''}` }, t(`ct.health.${c.health}`)) : null,
+        ctUpdateTag(c.update),
+      ),
+      // Özetle sabitlenmiş imajın uzun sha256 kısmı yalnızca ipucunda gösterilir.
+      h('div', { class: 'mono muted small ct-image', title: c.image }, c.image.replace(/@sha256:[0-9a-f]{12,}$/, '@sha256:…')),
+    ),
+    h(
+      'div',
+      { class: 'ct-stats' },
+      h('span', null, h('small', null, 'CPU'), h('b', null, s ? fmtPct(s.cpu) : '—')),
+      h('span', { title: s?.memLimit ? t('ct.memOf', { limit: fmtBytes(s.memLimit) }) : '' }, h('small', null, t('ct.mem')), h('b', null, s?.mem != null ? fmtBytes(s.mem) : '—'), memPct != null && memPct >= 1 ? mini(memPct) : null),
+      h('span', null, h('small', null, t('ct.net')), h('b', null, s ? `↓${fmtBytes(s.netRx)} ↑${fmtBytes(s.netTx)}` : '—')),
+      h('span', null, h('small', null, t('ct.up')), h('b', null, c.state === 'running' && c.startedAt ? fmtDuration(Math.max(1, (Date.now() - c.startedAt) / 1000)) : '—')),
+    ),
+    h(
+      'div',
+      { class: 'ct-foot' },
+      h(
+        'span',
+        { class: 'muted small' },
+        c.ports.length ? t('ct.ports', { list: c.ports.join(', ') }) : t('ct.noPorts'),
+        c.restartCount ? h('span', { class: 'ct-restarts' }, ` · ${t('ct.restarts', { n: c.restartCount })}`) : null,
+      ),
+      h('span', { class: 'up-actions' }, logs, actions),
+    ),
+  );
+}
+
+function renderContainers() {
+  const root = $('containers-root');
+  if (ctState.unavailable) return fill(root, h('article', { class: 'card' }, errorBox(t(`ct.err.${ctState.unavailable}`)), h('p', { class: 'muted small' }, t('ct.unavailableHint'))));
+  const d = ctState.data;
+  if (!d) return fill(root, h('article', { class: 'card' }, placeholder(t('common.loading'))));
+  const running = d.containers.filter((c) => c.state === 'running').length;
+  const updates = d.containers.filter((c) => c.update?.state === 'available').length;
+  const check = button(t('ct.checkUpdates'), null, async () => {
+    ctState.checking = true;
+    renderContainers();
+    const res = await api('/api/docker/check-updates', {});
+    ctState.checking = false;
+    if (res.ok) ctState.data = res.data;
+    renderContainers();
+  });
+  check.disabled = ctState.checking || d.checkingUpdates;
+  if (ctState.checking) check.textContent = t('ct.checking');
+  // Compose projesine (CasaOS uygulaması) göre gruplanır.
+  const groups = new Map();
+  for (const c of d.containers) {
+    const key = c.project ?? '';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(c);
+  }
+  const ordered = [...groups.entries()].sort((a, b) => (a[0] === '') - (b[0] === '') || a[0].localeCompare(b[0]));
+  fill(
+    root,
+    h(
+      'article',
+      { class: 'card' },
+      h(
+        'div',
+        { class: 'card-head' },
+        h('h2', { class: 'card-title' }, icon('server'), h('span', null, t('ct.title'))),
+        h('span', { class: 'card-meta' }, [t('ct.meta', { running, total: d.containers.length }), updates ? t('ct.updatesMeta', { n: updates }) : null].filter(Boolean).join(' · ')),
+        h('div', { class: 'card-tools' }, check),
+      ),
+      ctState.error,
+      d.containers.length
+        ? ordered.map(([project, list]) => h('section', { class: 'ct-group' }, ordered.length > 1 ? h('h3', { class: 'sub-title' }, project || t('ct.noProject')) : null, h('ul', { class: 'ct-list' }, list.map(ctRow))))
+        : placeholder(t('ct.empty')),
+    ),
+  );
+}
+
+async function loadContainers() {
+  clearTimeout(ctState.timer);
+  const res = await api('/api/docker');
+  if (res.ok) {
+    ctState.data = res.data;
+    ctState.unavailable = null;
+    ctState.error = null;
+  } else {
+    ctState.unavailable = ['docker_unavailable', 'docker_down'].includes(res.data?.code) ? res.data.code : 'failed';
+  }
+  renderContainers();
+  if (currentRoute() === 'konteynerler') ctState.timer = setTimeout(loadContainers, ctState.data?.checkingUpdates ? 4000 : 10_000);
+}
+
+function enterContainers() {
+  renderContainers();
+  loadContainers();
+}
+
+function leaveContainers() {
+  clearTimeout(ctState.timer);
+}
+
 // ---------- Bölümler ve sol menü ----------
 
 const ROUTES = {
@@ -4618,6 +4767,7 @@ const ROUTES = {
   'yapay-zeka': t('nav.ai'),
   raporlar: t('nav.reports'),
   izleme: t('nav.uptime'),
+  konteynerler: t('nav.containers'),
   gunlukler: t('nav.logs'),
   guvenlik: t('nav.security'),
   yedekler: t('nav.backups'),
@@ -4678,6 +4828,8 @@ function applyRoute() {
   else leaveBackups();
   if (route === 'izleme') enterUptime();
   else leaveUptime();
+  if (route === 'konteynerler') enterContainers();
+  else leaveContainers();
   window.scrollTo(0, 0);
   // Gizliyken genişliği sıfır olan grafikler görünür olunca yeniden çizilir.
   requestAnimationFrame(redrawCharts);
