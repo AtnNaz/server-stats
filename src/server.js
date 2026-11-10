@@ -25,6 +25,7 @@ import { createChatStore } from './chat-store.js';
 import { updateSummaryMessages } from './update-summary.js';
 import { createSpeedtest } from './speedtest.js';
 import { createUptime } from './uptime.js';
+import { createDiskHealth, HEALTH_RANGES } from './disk-health.js';
 import { upgrade } from './websocket.js';
 import { createTerminals, terminalAvailable } from './terminal.js';
 import { runQuery, queryAvailable } from './query.js';
@@ -199,7 +200,18 @@ function main() {
   // Oturumlar durum klasöründe saklanır: "beni hatırla" panel yeniden başlayınca da geçerli kalır.
   const sessions = createSessions({ file: path.join(stateDir, 'sessions.json'), authKey: authKeyOf(effective.auth.username, effective.auth.passwordHash) });
   const history = createHistoryStore({ dir: path.join(stateDir, 'history'), retentionDays: config.history.retentionDays });
-  const samplerHooks = { onSample: (snapshot) => history.add(snapshot) };
+  // Disk sağlığı geçmişi: SMART değerleri saatte bir kaydedilir.
+  const diskHealth = createDiskHealth({ dir: path.join(stateDir, 'disk-health') });
+  let diskAlerts = [];
+  const refreshDiskAlerts = () => diskHealth.alerts().then((a) => (diskAlerts = a), () => {});
+  setInterval(refreshDiskAlerts, 10 * 60_000).unref();
+  refreshDiskAlerts();
+  const samplerHooks = {
+    onSample: (snapshot) => {
+      history.add(snapshot);
+      diskHealth.record(snapshot).catch((err) => console.warn(`Disk sağlığı kaydedilemedi: ${err.message}`));
+    },
+  };
   let sampler = createSampler(effective, samplerHooks);
   const assets = loadAssets();
   const updates = createUpdateChecker({ repo: repoFromUrl(ABOUT.homepage), current: ABOUT.version, stateDir, enabled: config.updateCheck });
@@ -705,6 +717,7 @@ function main() {
         update: update.available ? { latest: update.latest } : null,
         backup: await backupSummary(await readSystemStatus()),
         uptimeDown: uptime.down(),
+        diskAlerts,
         ...sampler.current(),
       });
     }
@@ -757,6 +770,11 @@ function main() {
     }
     if (pathname === '/api/backup') return handleBackup(req, res);
     if (pathname === '/api/uptime') return sendJson(req, res, 200, await uptime.status());
+    if (pathname === '/api/disk-health') {
+      const range = new URL(req.url, 'http://localhost').searchParams.get('range') ?? '30d';
+      if (!Object.hasOwn(HEALTH_RANGES, range)) return sendJson(req, res, 400, { code: 'invalid' });
+      return sendJson(req, res, 200, await diskHealth.query(range));
+    }
     if (pathname === '/api/security') return handleSecurity(req, res, new URL(req.url, 'http://localhost').searchParams);
     if (pathname === '/api/services/available') {
       try {

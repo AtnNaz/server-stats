@@ -12,6 +12,7 @@ Geliştirici: [Ali Toprak Naz](https://github.com/AtnNaz) · Lisans: [PolyForm N
 - **Sıcaklık ve fanlar:** işlemci, NVMe diskler, anakart sensörleri ve fan devirleri
 - **Ekran kartı:** NVIDIA kartlarda kullanım, VRAM, sıcaklık, güç ve kartı kullanan süreçler (`nvidia-smi` varsa kendiliğinden açılır)
 - **Docker:** konteynerler ve durumları (isteğe bağlı)
+- **Disk sağlığı geçmişi:** Depolama sayfasında her diskin sıcaklığı, bozuk sektör sayaçları (taşınan, okunamayan, düzeltilemeyen), SSD aşınması ve yazılan veri 7 gün / 30 gün / 1 yıllık grafiklerle gösterilir. Değerler SMART'tan saatte bir kaydedilir ve 13 ay saklanır. Bir diskin bozuk sektör sayacı son 7 günde artarsa Genel bakış'ta uyarı çıkar; SSD aşınması artıyorsa bu hızla kalan ömür kabaca tahmin edilir
 - **Disk alanı analizi:** Depolama sayfasında bir diski taratıp hangi klasörün ne kadar yer kapladığını kutu haritasında görürsünüz; klasörlere tıklayarak inilir, en büyük dosyalar listelenir (bkz. [Disk alanı, günlükler ve güvenlik](#disk-alanı-günlükler-ve-güvenlik))
 - **Günlükler:** sistem günlüğü, tek bir servis, çekirdek ya da Docker konteyneri kayıtları; önem derecesi, zaman aralığı ve metinle süzülür, canlı izlenebilir
 - **GitHub yedeği:** Ayarlar'a GitHub kullanıcı adınızı girersiniz; repolarınız her gün bu sunucuya kopyalanır: bütün commit'ler, branch'ler, tag'ler, release'ler (notları ve dosyalarıyla), isteğe bağlı issue/PR'lar ve wiki. GitHub'da silinen hiçbir şey yedekten silinmez (bkz. [GitHub yedeği](#github-yedeği))

@@ -1109,3 +1109,17 @@ a.btn { text-decoration: none; }
   .up-stats { width: 100%; justify-content: space-between; }
   .up-stats span { text-align: left; }
 }
+
+/* Disk sağlığı geçmişi */
+.dh-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
+.dh-summary { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px 24px; margin-bottom: 16px; }
+.dh-title { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.dh-facts { display: grid; grid-template-columns: repeat(4, auto); gap: 4px 22px; margin: 0; }
+.dh-facts dt { color: var(--muted); font-size: 12px; }
+.dh-facts dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+.dh-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 16px; }
+.dh-chart { display: grid; gap: 6px; }
+.dh-chart[hidden] { display: none; }
+.dh-chart-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 13px; }
+.dh-chart .chart { height: 150px; }
+@media (max-width: 640px) { .dh-facts { grid-template-columns: repeat(2, auto); } }

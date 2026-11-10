@@ -976,6 +976,10 @@ function renderAlerts(s) {
   }
   items.sort((a, b) => (a.level === 'crit' ? 0 : 1) - (b.level === 'crit' ? 0 : 1));
 
+  // Disk sağlığı: son 7 günde bozuk sektör sayacı artan diskler.
+  for (const d of lastData?.diskAlerts ?? []) {
+    items.push({ level: 'crit', title: t('alert.diskSectors', { disk: d.model ?? d.name }), detail: d.increases.map((x) => `${t(`dh.c.${x.counter}`)} ${x.from} → ${x.to}`).join(', '), href: '#/depolama' });
+  }
   // Servis izleme: kesintideki hedefler.
   for (const m of lastData?.uptimeDown ?? []) {
     items.push({ level: 'crit', title: t('alert.uptimeDown', { name: m.name }), detail: m.since ? t('alert.uptimeSince', { ago: fmtAgo(m.since) }) : t('up.s.down'), href: '#/izleme' });
@@ -3663,6 +3667,7 @@ function renderUsage() {
 
 function enterStorage() {
   if (!usageState.built) buildUsageCard();
+  loadDiskHealth();
 }
 
 // ---------- Günlükler ----------
@@ -4463,6 +4468,139 @@ function enterUptime() {
 function leaveUptime() {
   clearTimeout(upState.timer);
   upState.editing = null;
+}
+
+// ---------- Disk sağlığı geçmişi ----------
+
+const dhState = { range: '30d', disk: null, data: null, built: false, timer: null, charts: {} };
+const DH_RANGES = [
+  ['7d', 'dh.r7'],
+  ['30d', 'dh.r30'],
+  ['365d', 'dh.r365'],
+];
+const dhDay = new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'short' });
+
+function buildDiskHealthCard() {
+  const tabs = h('div', { class: 'seg', role: 'group', 'aria-label': t('dh.disk'), id: 'dh-tabs' });
+  const range = segEl(
+    DH_RANGES.map(([v, k]) => [v, t(k)]),
+    dhState.range,
+    (v) => {
+      dhState.range = v;
+      loadDiskHealth();
+    },
+  );
+  const mk = (id, titleKey, legend, options) => {
+    const canvas = h('canvas', { class: 'chart', tabindex: '0', 'aria-label': t(titleKey) });
+    const chart = new LineChart(canvas, { ...options, timeLabel: historyTimeLabel });
+    allCharts.push(chart);
+    const meta = h('span', { class: 'muted small' });
+    dhState.charts[id] = { chart, meta };
+    return h(
+      'div',
+      { class: 'dh-chart' },
+      h('div', { class: 'dh-chart-head' }, h('strong', null, t(titleKey)), meta),
+      h('div', { class: 'legend' }, legend.map(([key, label]) => h('span', null, h('i', { class: `key ${key}` }), label))),
+      h('div', { class: 'chart-wrap' }, canvas),
+    );
+  };
+  fill(
+    $('dh-body'),
+    h('div', { class: 'dh-toolbar' }, tabs, range.el),
+    h('div', { id: 'dh-summary' }),
+    h(
+      'div',
+      { class: 'dh-charts' },
+      mk('temp', 'dh.temp', [['s1', t('dh.temp')]], { format: (v) => `${num0.format(v)} °C` }),
+      mk('sectors', 'dh.sectors', [['s1', t('dh.realloc')], ['s2', t('dh.badNow')]], { format: (v) => num0.format(v) }),
+      mk('wear', 'dh.wearTitle', [['s1', t('dh.wear')]], { max: 100, format: pctAxis }),
+    ),
+  );
+  dhState.built = true;
+}
+
+const dhCounterText = (k, v) => `${t(`dh.c.${k}`)} ${num0.format(v)}`;
+
+function renderDiskHealth() {
+  const d = dhState.data;
+  const body = $('dh-body');
+  if (!d) return;
+  if (!d.disks.length) {
+    dhState.built = false;
+    return fill(body, placeholder(t('dh.empty')));
+  }
+  if (!dhState.built) buildDiskHealthCard();
+  if (!d.disks.some((x) => x.key === dhState.disk)) dhState.disk = d.disks[0].key;
+  renderTabs(
+    $('dh-tabs'),
+    d.disks.map((x) => ({ id: x.key, label: x.name, title: x.model ?? x.name })),
+    dhState.disk,
+    (id) => {
+      dhState.disk = id;
+      renderDiskHealth();
+    },
+  );
+  const disk = d.disks.find((x) => x.key === dhState.disk);
+  const L = disk.latest;
+  const bad = ['realloc', 'pending', 'offline', 'reported', 'media'].filter((k) => L[k] > 0);
+  const notes = [
+    disk.increases.length
+      ? tag('crit', 'crit', t('dh.increased', { list: disk.increases.map((x) => `${t(`dh.c.${x.counter}`)} ${x.from} → ${x.to}`).join(', ') }))
+      : bad.length
+        ? tag('warn', 'warn', t('dh.stable', { list: bad.map((k) => dhCounterText(k, L[k])).join(', ') }))
+        : tag('ok', 'ok', t('dh.clean')),
+    disk.yearsLeft != null ? h('span', { class: 'muted small' }, t('dh.yearsLeft', { y: num1.format(disk.yearsLeft) })) : null,
+    h('span', { class: 'muted small' }, t('dh.since', { date: dhDay.format(new Date(disk.since)) })),
+  ];
+  fill(
+    $('dh-summary'),
+    h(
+      'div',
+      { class: 'dh-summary' },
+      h('div', { class: 'dh-title' }, h('strong', null, disk.model ?? disk.name), disk.type ? h('span', { class: 'tag' }, disk.type) : null, notes),
+      h(
+        'dl',
+        { class: 'dh-facts' },
+        metric(t('dh.temp'), L.temp != null ? `${num0.format(L.temp)} °C` : '—'),
+        metric(t('dh.poh'), L.poh != null ? fmtHours(L.poh) : '—'),
+        metric(t('dh.wear'), L.wear != null ? fmtPct(L.wear) : '—'),
+        metric(t('dh.written'), L.written != null ? fmtBytes(L.written) : '—'),
+      ),
+    ),
+  );
+  const pts = disk.points;
+  const times = pts.map((p) => p.t);
+  const capacity = Math.max(2, pts.length);
+  const series = (values, key, color, extra = {}) => ({ key, color, values, ...extra });
+  const c = dhState.charts;
+  c.temp.chart.set({ times, capacity, series: [series(pts.map((p) => p.temp), 's1', '--series-1', { name: t('dh.temp'), fill: true })] });
+  const temps = pts.map((p) => p.temp).filter((v) => v != null);
+  c.temp.meta.textContent = temps.length ? t('dh.tempRange', { min: num0.format(Math.min(...temps)), max: num0.format(Math.max(...temps)) }) : '';
+  c.sectors.chart.set({
+    times,
+    capacity,
+    series: [
+      series(pts.map((p) => p.realloc ?? p.media ?? null), 's1', '--series-1', { name: t('dh.realloc') }),
+      series(pts.map((p) => (p.pending == null && p.offline == null ? null : (p.pending ?? 0) + (p.offline ?? 0))), 's2', '--series-2', { name: t('dh.badNow') }),
+    ],
+  });
+  c.sectors.meta.textContent = bad.length ? bad.map((k) => dhCounterText(k, L[k])).join(' · ') : t('dh.clean');
+  const hasWear = pts.some((p) => p.wear != null);
+  c.wear.chart.canvas.closest('.dh-chart').hidden = !hasWear;
+  if (hasWear) {
+    c.wear.chart.set({ times, capacity, series: [series(pts.map((p) => p.wear), 's1', '--series-1', { name: t('dh.wear'), fill: true })] });
+    c.wear.meta.textContent = L.written != null ? t('dh.writtenTotal', { v: fmtBytes(L.written) }) : '';
+  }
+}
+
+async function loadDiskHealth() {
+  clearTimeout(dhState.timer);
+  const res = await api(`/api/disk-health?range=${dhState.range}`);
+  if (res.ok) {
+    dhState.data = res.data;
+    renderDiskHealth();
+  }
+  if (currentRoute() === 'depolama') dhState.timer = setTimeout(loadDiskHealth, 10 * 60_000);
 }
 
 // ---------- Bölümler ve sol menü ----------
