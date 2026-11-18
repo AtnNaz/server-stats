@@ -3501,13 +3501,29 @@ function descendUsage(node, base, p) {
   return node;
 }
 
+function usageOwner(d, p) {
+  return (d.tree.d ?? []).filter((c) => p === c.n || p.startsWith(c.n === '/' ? '/' : `${c.n}/`)).sort((a, b) => b.n.length - a.n.length)[0] ?? null;
+}
+
 function usageNode(p) {
   const d = usageState.data;
   if (!d) return null;
   if (d.path !== USAGE_ALL) return descendUsage(d.tree, d.path, p);
   if (p === USAGE_ALL) return d.tree;
-  const owner = (d.tree.d ?? []).filter((c) => p === c.n || p.startsWith(c.n === '/' ? '/' : `${c.n}/`)).sort((a, b) => b.n.length - a.n.length)[0];
+  const owner = usageOwner(d, p);
   return owner ? descendUsage(owner, owner.n, p) : null;
+}
+
+function syncUsageSelect() {
+  const sel = usageState.select;
+  const root = usageState.data?.path;
+  if (!sel || !root) return;
+  if (![...sel.options].some((o) => o.value === root)) {
+    sel.selectedIndex = -1;
+    return;
+  }
+  sel.value = root;
+  usageState.root = root;
 }
 
 function usageRoots() {
@@ -3523,6 +3539,7 @@ function buildUsageCard() {
   const roots = usageRoots();
   usageState.root ??= roots.find(([m]) => m === '/')?.[0] ?? roots[0][0];
   const sel = selectEl(roots, usageState.root);
+  usageState.select = sel;
   sel.setAttribute('aria-label', t('usage.root'));
   sel.addEventListener('change', () => {
     usageState.root = sel.value;
@@ -3571,6 +3588,7 @@ function handleUsage(p, res) {
   } else if (d.result) {
     usageState.data = { ...d.result, at: d.at };
     usageState.focus = p;
+    syncUsageSelect();
   }
   renderUsage();
 }
@@ -3612,15 +3630,21 @@ function renderUsage() {
 
   // Yol çubuğu: tarama kökünün üstündeki klasörler yeniden tarama ister.
   const combined = d.path === USAGE_ALL;
-  const parts = focus === USAGE_ALL ? [] : focus === '/' ? [''] : focus.split('/');
-  const crumbs = parts.map((part, i) => {
-    const p = i === 0 ? '/' : parts.slice(0, i + 1).join('/');
-    const label = i === 0 ? '/' : part;
+  const crumbItem = (p, label) => {
     if (p === focus) return h('strong', { class: 'mono' }, label);
     const b = h('button', { type: 'button', class: 'link-btn mono' }, label);
     b.addEventListener('click', () => openUsage(p, false));
     return b;
-  });
+  };
+  let crumbs;
+  if (combined) {
+    const owner = focus === USAGE_ALL ? null : usageOwner(d, focus);
+    const rest = owner && focus !== owner.n ? focus.slice(owner.n === '/' ? 1 : owner.n.length + 1).split('/') : [];
+    crumbs = owner ? [crumbItem(owner.n, owner.n), ...rest.map((part, i) => crumbItem(joinPath(owner.n, rest.slice(0, i + 1).join('/')), part))] : [];
+  } else {
+    const parts = focus === '/' ? [''] : focus.split('/');
+    crumbs = parts.map((part, i) => crumbItem(i === 0 ? '/' : parts.slice(0, i + 1).join('/'), i === 0 ? '/' : part));
+  }
 
   const kids = node.d ?? [];
   const childSum = kids.reduce((s, c) => s + c.s, 0);
@@ -3670,7 +3694,7 @@ function renderUsage() {
 
   fill(
     body,
-    h('div', { class: 'usage-head' }, h('nav', { class: 'crumbs', 'aria-label': t('usage.path') }, combined ? allCrumb(focus) : null, combined && crumbs.length ? h('span', { class: 'muted' }, ' › ') : null, crumbs[0], crumbs.slice(1).flatMap((c, i) => (i ? [h('span', { class: 'muted' }, '/'), c] : [c]))), h('span', { class: 'usage-total' }, fmtBytes(node.s), d.capacity && focus === d.path ? h('span', { class: 'muted small' }, ` / ${fmtBytes(d.capacity.size)}`) : null), notes),
+    h('div', { class: 'usage-head' }, h('nav', { class: 'crumbs', 'aria-label': t('usage.path') }, combined ? allCrumb(focus) : null, combined && crumbs.length ? h('span', { class: 'muted' }, ' › ') : null, crumbs[0], crumbs.slice(1).flatMap((c, i) => (i || crumbs[0].textContent !== '/' ? [h('span', { class: 'muted' }, '/'), c] : [c]))), h('span', { class: 'usage-total' }, fmtBytes(node.s), d.capacity && focus === d.path ? h('span', { class: 'muted small' }, ` / ${fmtBytes(d.capacity.size)}`) : null), notes),
     items.length ? box : placeholder(t('usage.empty')),
     h(
       'div',
