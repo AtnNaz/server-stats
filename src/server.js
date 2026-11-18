@@ -31,6 +31,7 @@ import { upgrade } from './websocket.js';
 import { createTerminals, terminalAvailable } from './terminal.js';
 import { runQuery, queryAvailable } from './query.js';
 import { validateQuery, validScanPath } from './query-protocol.js';
+import { ALL_DISKS, diskMounts, combineUsage } from './usage.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -298,27 +299,54 @@ function main() {
   const usage = { job: null, results: new Map() };
   function usageStatus(p) {
     const cached = usage.results.get(p);
-    return { running: usage.job?.path ?? null, startedAt: usage.job?.startedAt ?? null, result: cached?.result ?? null, error: cached?.error ?? null, at: cached?.at ?? null };
+    return { running: usage.job?.path ?? null, startedAt: usage.job?.startedAt ?? null, current: usage.job?.current ?? null, step: usage.job?.step ?? null, steps: usage.job?.steps ?? null, result: cached?.result ?? null, error: cached?.error ?? null, at: cached?.at ?? null };
+  }
+  const validUsagePath = (p) => p === ALL_DISKS || validScanPath(p);
+
+  async function scanAllDisks(refresh) {
+    const mounts = diskMounts(sampler.current().snapshot);
+    if (!mounts.length) throw Object.assign(new Error('not_found'), { code: 'not_found' });
+    const parts = [];
+    const failed = [];
+    usage.job.steps = mounts.length;
+    for (const [i, mount] of mounts.entries()) {
+      usage.job.current = mount;
+      usage.job.step = i + 1;
+      const cached = usage.results.get(mount);
+      if (!refresh && cached?.result && Date.now() - cached.at < USAGE_TTL) {
+        parts.push(cached.result);
+        continue;
+      }
+      try {
+        const result = await query({ op: 'du', path: mount }, 210_000);
+        usage.results.set(mount, { result, at: Date.now() });
+        parts.push(result);
+      } catch (err) {
+        failed.push({ path: mount, error: err.code ?? 'failed' });
+      }
+    }
+    if (!parts.length) throw Object.assign(new Error(failed[0]?.error ?? 'failed'), { code: failed[0]?.error ?? 'failed' });
+    return combineUsage(parts, failed);
   }
 
   async function handleDiskUsage(req, res) {
     const body = await readJsonBody(req, res);
     if (!body) return;
-    if (!validScanPath(body.path)) return sendJson(req, res, 400, { code: 'invalid' });
+    if (!validUsagePath(body.path)) return sendJson(req, res, 400, { code: 'invalid' });
     if (!(await queryAvailable(config.query.socket))) return sendJson(req, res, 409, { code: 'query_unavailable' });
     const cached = usage.results.get(body.path);
     if (body.refresh !== true && cached?.result && Date.now() - cached.at < USAGE_TTL) return sendJson(req, res, 200, usageStatus(body.path));
     if (usage.job) return sendJson(req, res, usage.job.path === body.path ? 202 : 409, { ...usageStatus(body.path), ...(usage.job.path !== body.path && { code: 'busy' }) });
     usage.job = { path: body.path, startedAt: Date.now() };
     console.log(`Disk alanı analizi: ${body.path} (${clientIp(req)})`);
-    query({ op: 'du', path: body.path }, 210_000)
+    (body.path === ALL_DISKS ? scanAllDisks(body.refresh === true) : query({ op: 'du', path: body.path }, 210_000))
       .then(
         (result) => usage.results.set(body.path, { result, at: Date.now() }),
         (err) => usage.results.set(body.path, { error: err.code ?? 'failed', at: Date.now() }),
       )
       .finally(() => {
         usage.job = null;
-        while (usage.results.size > 8) usage.results.delete(usage.results.keys().next().value);
+        while (usage.results.size > 16) usage.results.delete(usage.results.keys().next().value);
       });
     return sendJson(req, res, 202, usageStatus(body.path));
   }
@@ -793,7 +821,7 @@ function main() {
     }
     if (pathname === '/api/disk-usage') {
       const p = new URL(req.url, 'http://localhost').searchParams.get('path');
-      if (!validScanPath(p)) return sendJson(req, res, 400, { code: 'invalid' });
+      if (!validUsagePath(p)) return sendJson(req, res, 400, { code: 'invalid' });
       return sendJson(req, res, 200, { available: await queryAvailable(config.query.socket), ...usageStatus(p) });
     }
     if (pathname === '/api/logs') return handleLogs(req, res, new URL(req.url, 'http://localhost').searchParams);

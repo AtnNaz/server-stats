@@ -3486,16 +3486,14 @@ function layoutRow(row, x, y, w, h, out) {
   return { x, y: y + rh, w, h: h - rh };
 }
 
-const joinPath = (base, name) => (base === '/' ? `/${name}` : `${base}/${name}`);
+const USAGE_ALL = '*';
+const joinPath = (base, name) => (base === USAGE_ALL ? name : base === '/' ? `/${name}` : `${base}/${name}`);
 
 // Taranan ağaçta bir yolun düğümü (yol tarama kökünün altında değilse null).
-function usageNode(p) {
-  const d = usageState.data;
-  if (!d) return null;
-  if (p === d.path) return d.tree;
-  const prefix = d.path === '/' ? '/' : `${d.path}/`;
+function descendUsage(node, base, p) {
+  if (p === base) return node;
+  const prefix = base === '/' ? '/' : `${base}/`;
   if (!p.startsWith(prefix)) return null;
-  let node = d.tree;
   for (const part of p.slice(prefix.length).split('/')) {
     node = node.d?.find((c) => c.n === part);
     if (!node) return null;
@@ -3503,10 +3501,21 @@ function usageNode(p) {
   return node;
 }
 
+function usageNode(p) {
+  const d = usageState.data;
+  if (!d) return null;
+  if (d.path !== USAGE_ALL) return descendUsage(d.tree, d.path, p);
+  if (p === USAGE_ALL) return d.tree;
+  const owner = (d.tree.d ?? []).filter((c) => p === c.n || p.startsWith(c.n === '/' ? '/' : `${c.n}/`)).sort((a, b) => b.n.length - a.n.length)[0];
+  return owner ? descendUsage(owner, owner.n, p) : null;
+}
+
 function usageRoots() {
   const disks = (lastData?.snapshot?.system?.disks ?? []).filter((d) => !d.error);
   // Disk listesi okunamadıysa en azından kök dizin taranabilsin.
-  return disks.length ? disks.map((d) => [d.mount, `${d.mount} · ${fmtBytes(d.used)}`]) : [['/', '/']];
+  if (!disks.length) return [['/', '/']];
+  const roots = disks.map((d) => [d.mount, `${d.mount} · ${fmtBytes(d.used)}`]);
+  return disks.length > 1 ? [[USAGE_ALL, `${t('usage.allDisks')} · ${fmtBytes(disks.reduce((n, d) => n + (d.used ?? 0), 0))}`], ...roots] : roots;
 }
 
 function buildUsageCard() {
@@ -3551,6 +3560,7 @@ function handleUsage(p, res) {
   const d = res.data;
   if (d.running === p) {
     usageState.startedAt = d.startedAt ?? usageState.startedAt;
+    usageState.progress = d.steps ? { current: d.current, step: d.step, steps: d.steps } : null;
     renderUsage();
     usageState.timer = setTimeout(async () => handleUsage(p, await api(`/api/disk-usage?path=${encodeURIComponent(p)}`)), 1500);
     return;
@@ -3565,6 +3575,13 @@ function handleUsage(p, res) {
   renderUsage();
 }
 
+function allCrumb(focus) {
+  if (focus === USAGE_ALL) return h('strong', null, t('usage.allDisks'));
+  const b = h('button', { type: 'button', class: 'link-btn' }, t('usage.allDisks'));
+  b.addEventListener('click', () => openUsage(USAGE_ALL, false));
+  return b;
+}
+
 function renderUsage() {
   const body = $('usage-body');
   const meta = $('usage-meta');
@@ -3573,7 +3590,9 @@ function renderUsage() {
   if (usageState.pending) {
     meta.textContent = '';
     const secs = Math.round((Date.now() - (usageState.startedAt ?? Date.now())) / 1000);
-    fill(body, h('p', { class: 'placeholder usage-wait' }, h('span', { class: 'spin' }), t('usage.scanning', { path: usageState.pending, s: secs })));
+    const prog = usageState.pending === USAGE_ALL ? usageState.progress : null;
+    const text = usageState.pending === USAGE_ALL ? (prog ? t('usage.scanningAll', { path: prog.current, step: prog.step, steps: prog.steps, s: secs }) : t('usage.scanning', { path: t('usage.allDisks'), s: secs })) : t('usage.scanning', { path: usageState.pending, s: secs });
+    fill(body, h('p', { class: 'placeholder usage-wait' }, h('span', { class: 'spin' }), text));
     clearTimeout(usageState.tick);
     usageState.tick = setTimeout(() => usageState.pending && renderUsage(), 1000);
     return;
@@ -3592,7 +3611,8 @@ function renderUsage() {
   meta.textContent = [t('usage.scanned', { ago: fmtAgo(d.at) }), t('usage.stats', { files: num0.format(d.files), s: num1.format(d.seconds) })].join(' · ');
 
   // Yol çubuğu: tarama kökünün üstündeki klasörler yeniden tarama ister.
-  const parts = focus === '/' ? [''] : focus.split('/');
+  const combined = d.path === USAGE_ALL;
+  const parts = focus === USAGE_ALL ? [] : focus === '/' ? [''] : focus.split('/');
   const crumbs = parts.map((part, i) => {
     const p = i === 0 ? '/' : parts.slice(0, i + 1).join('/');
     const label = i === 0 ? '/' : part;
@@ -3639,17 +3659,18 @@ function renderUsage() {
   });
   if (rest > 0) rows.push(h('tr', null, h('td', { class: 'muted' }, t('usage.rest')), h('td', { class: 'r' }, fmtBytes(rest)), h('td', { class: 'usage-bar' }, mini((rest / node.s) * 100), h('span', { class: 'muted small' }, fmtPct((rest / node.s) * 100))), h('td')));
 
-  const prefix = focus === '/' ? '/' : `${focus}/`;
+  const prefix = focus === USAGE_ALL ? '' : focus === '/' ? '/' : `${focus}/`;
   const largest = d.largest.filter((f) => f.path.startsWith(prefix)).slice(0, 15);
   const mounts = d.mounts.filter((m) => m.startsWith(prefix));
   const notes = [
     d.partial ? tag('warn', 'warn', t('usage.partial')) : null,
     d.errors ? h('span', { class: 'muted small' }, t('usage.errors', { n: num0.format(d.errors) })) : null,
+    d.failed?.length ? tag('warn', 'warn', t('usage.failedDisks', { list: d.failed.map((f) => f.path).join(', ') })) : null,
   ];
 
   fill(
     body,
-    h('div', { class: 'usage-head' }, h('nav', { class: 'crumbs', 'aria-label': t('usage.path') }, crumbs[0], crumbs.slice(1).flatMap((c, i) => (i ? [h('span', { class: 'muted' }, '/'), c] : [c]))), h('span', { class: 'usage-total' }, fmtBytes(node.s), d.capacity && focus === d.path ? h('span', { class: 'muted small' }, ` / ${fmtBytes(d.capacity.size)}`) : null), notes),
+    h('div', { class: 'usage-head' }, h('nav', { class: 'crumbs', 'aria-label': t('usage.path') }, combined ? allCrumb(focus) : null, combined && crumbs.length ? h('span', { class: 'muted' }, ' › ') : null, crumbs[0], crumbs.slice(1).flatMap((c, i) => (i ? [h('span', { class: 'muted' }, '/'), c] : [c]))), h('span', { class: 'usage-total' }, fmtBytes(node.s), d.capacity && focus === d.path ? h('span', { class: 'muted small' }, ` / ${fmtBytes(d.capacity.size)}`) : null), notes),
     items.length ? box : placeholder(t('usage.empty')),
     h(
       'div',
