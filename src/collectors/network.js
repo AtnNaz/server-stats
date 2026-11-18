@@ -1,4 +1,5 @@
 import os from 'node:os';
+import { access } from 'node:fs/promises';
 import { readText } from '../util.js';
 
 const LITTLE_ENDIAN = os.endianness() === 'LE';
@@ -34,6 +35,27 @@ export function globMatch(pattern, text) {
 
 export function globMatcher(patterns) {
   return { test: (text) => patterns.some((p) => globMatch(p, text)) };
+}
+
+export function parseWireless(text) {
+  const out = {};
+  for (const line of String(text ?? '').split('\n').slice(2)) {
+    const m = /^\s*([^:\s]+):\s+\S+\s+(-?[\d.]+)\.?\s+(-?[\d.]+)\.?/.exec(line);
+    if (!m) continue;
+    const link = Number(m[2]);
+    const level = Number(m[3]);
+    out[m[1]] = { quality: Number.isFinite(link) ? Math.max(0, Math.min(100, Math.round((link / 70) * 100))) : null, signal: Number.isFinite(level) && level < 0 ? Math.round(level) : null };
+  }
+  return out;
+}
+
+const exists = (p) => access(p).then(() => true, () => false);
+
+async function interfaceKind(name) {
+  const base = `/sys/class/net/${name}`;
+  if ((await exists(`${base}/wireless`)) || (await exists(`${base}/phy80211`))) return 'wifi';
+  if (await exists(`${base}/device`)) return 'ethernet';
+  return 'virtual';
 }
 
 export function parseNetDev(text) {
@@ -142,8 +164,9 @@ export function createNetworkCollector({ hideInterfaces }) {
       const range = (await readOr('/proc/sys/net/ipv4/ip_local_port_range', '')).split(/\s+/).map(Number);
       ephemeral = range.length === 2 && range.every(Number.isFinite) ? range : null;
     }
-    const [devText, ...socketTexts] = await Promise.all([
+    const [devText, wirelessText, ...socketTexts] = await Promise.all([
       readText('/proc/net/dev'),
+      readOr('/proc/net/wireless', ''),
       ...SOCKET_FILES.map((f) => readOr(`/proc/net/${f}`, '')),
     ]);
 
@@ -154,16 +177,21 @@ export function createNetworkCollector({ hideInterfaces }) {
 
     // Adresi olmayan ve hiç trafik görmemiş arayüzler (gre0, sit0, tunl0 gibi çekirdeğin
     // yedek tünel aygıtları) listeyi kalabalıklaştırmasın.
-    const unused = (n) => !ifaddrs[n]?.length && counters[n].rxBytes === 0 && counters[n].txBytes === 0;
-    const names = Object.keys(counters).filter((n) => !hidden.test(n) && !unused(n));
+    const visible = Object.keys(counters).filter((n) => !hidden.test(n));
+    const kinds = Object.fromEntries(await Promise.all(visible.map(async (n) => [n, await interfaceKind(n)])));
+    const unused = (n) => kinds[n] === 'virtual' && !ifaddrs[n]?.length && counters[n].rxBytes === 0 && counters[n].txBytes === 0;
+    const names = visible.filter((n) => !unused(n));
     const states = await Promise.all(names.map((n) => readOr(`/sys/class/net/${n}/operstate`, 'unknown')));
+    const wireless = parseWireless(wirelessText);
     const interfaces = names.map((name, i) => {
       const c = counters[name];
       const old = prev?.[name];
       const addrs = ifaddrs[name] ?? [];
       return {
         name,
+        kind: kinds[name],
         state: states[i],
+        wifi: kinds[name] === 'wifi' && states[i] === 'up' && wireless[name] ? wireless[name] : null,
         mac: addrs[0]?.mac && addrs[0].mac !== '00:00:00:00:00:00' ? addrs[0].mac : null,
         addresses: addrs.filter((a) => !a.address.startsWith('fe80:')).map((a) => a.cidr ?? a.address),
         rxRate: rate(c.rxBytes, old?.rxBytes),

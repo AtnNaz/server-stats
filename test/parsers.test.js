@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import { parseCpuStat, cpuUsage, parseMeminfo, memoryFromMeminfo, parseMounts, selectDisks } from '../src/collectors/system.js';
-import { parseNetDev, parseSockets, groupPorts, hexToIPv6, globMatcher, exposure } from '../src/collectors/network.js';
+import { parseNetDev, parseSockets, groupPorts, hexToIPv6, globMatcher, exposure, parseWireless } from '../src/collectors/network.js';
 import { parseProcStat } from '../src/collectors/processes.js';
 import { parseSystemctlShow, toService } from '../src/collectors/services.js';
 import { summarizePorts } from '../src/collectors/docker.js';
@@ -249,4 +249,16 @@ test('statfs koruması: aynı anda sorgulanan sağlam diskler "yanıt vermiyor" 
   assert.equal(await stuck[0], 'zaman aşımı');
   await assert.rejects(query('/mnt/nfs3'));
   await assert.rejects(query('/'));
+});
+
+test('Wi-Fi sinyal bilgisi /proc/net/wireless dosyasından okunur', () => {
+  const text = `Inter-| sta-|   Quality        |   Discarded packets               | Missed | WE
+ face | tus | link level noise |  nwid  crypt   frag  retry   misc | beacon | 22
+wlan0: 0000   58.  -52.  -256        0      0      0      0     12        0
+wlx1: 0000    0    0     0        0      0      0      0      0        0
+`;
+  const w = parseWireless(text);
+  assert.deepEqual(w.wlan0, { quality: 83, signal: -52 });
+  assert.deepEqual(w.wlx1, { quality: 0, signal: null });
+  assert.deepEqual(parseWireless(''), {});
 });

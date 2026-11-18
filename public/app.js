@@ -611,11 +611,14 @@ function renderNetwork(net, history, capacity) {
   fill(
     body,
     ifaces.map((i) => {
-      const [cls, iconName, labelKey] = IF_STATES[i.state] ?? ['', 'off', 'iface.unknown'];
+      const idle = i.kind && i.kind !== 'virtual' && i.state === 'down' && !i.addresses.length;
+      const [cls, iconName, labelKey] = idle ? ['', 'off', 'iface.notConnected'] : (IF_STATES[i.state] ?? ['', 'off', 'iface.unknown']);
+      const kindLabel = i.kind === 'wifi' ? t('iface.wifi') : i.kind === 'ethernet' ? t('iface.ethernet') : null;
       return h(
         'div',
         { class: 'iface' },
-        h('div', { class: 'iface-top' }, h('span', null, i.name), tag(cls, iconName, t(labelKey))),
+        h('div', { class: 'iface-top' }, h('span', null, i.name, kindLabel ? h('span', { class: 'muted small' }, ` · ${kindLabel}`) : null), tag(cls, iconName, t(labelKey))),
+        i.wifi?.signal != null ? h('div', { class: 'muted small' }, t('iface.signal', { dbm: i.wifi.signal, q: i.wifi.quality ?? '—' })) : null,
         h('div', { class: 'iface-rates' }, h('span', null, h('i', { class: 'key s1' }), `↓ ${fmtRate(i.rxRate)}`), h('span', null, h('i', { class: 'key s2' }), `↑ ${fmtRate(i.txRate)}`)),
         i.addresses.length ? h('div', { class: 'addr mono' }, i.addresses.map((a) => h('div', null, a))) : null,
         h(
