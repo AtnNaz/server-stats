@@ -406,6 +406,9 @@ body[data-route="genel"] #svc-card .svc-icon { background: var(--surface); }
 /* Genel bakışta diskler kompakt; ayrıntılar Depolama bölümünde */
 body[data-route="genel"] #disk-card .row-foot { display: none; }
 body[data-route="genel"] #disk-card .list > li { padding: 8px 0; }
+body[data-route="genel"] #disk-card .disk-total { display: none; }
+body[data-route="depolama"] #disk-card .list > li.disk-total { grid-column: 1 / -1; border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+#disk-card .disk-total .row-title > span:first-child { font-weight: 600; }
 .kpi-body > div:first-child { min-width: 0; }
 .kpi-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 

@@ -491,11 +491,32 @@ function renderDisks(sys) {
   const disks = sys.disks;
   $('disk-meta').textContent = disks.length ? t('fs.count', { n: disks.length }) : '';
   if (!disks.length) return fill(body, placeholder(t('disk.none')));
+  const counted = disks.filter((d) => !d.error && Number.isFinite(d.total));
+  const sum = (key) => counted.reduce((n, d) => n + (d[key] ?? 0), 0);
+  const totalUsed = sum('used');
+  const totalFree = sum('available');
+  const totalPercent = totalUsed + totalFree > 0 ? (totalUsed / (totalUsed + totalFree)) * 100 : null;
+  const totalRow =
+    counted.length > 1
+      ? h(
+          'li',
+          { class: 'disk-total' },
+          h(
+            'div',
+            { class: 'row-head' },
+            h('span', { class: 'row-title' }, h('span', null, t('disk.total')), h('span', { class: 'tag' }, t('fs.count', { n: counted.length }))),
+            h('span', { class: 'row-value' }, fmtPct(totalPercent)),
+          ),
+          meter(totalPercent, ...TH.disk),
+          h('div', { class: 'row-foot' }, t('disk.usage', { used: fmtBytes(totalUsed), total: fmtBytes(sum('total')), free: fmtBytes(totalFree) })),
+        )
+      : null;
   fill(
     body,
     h(
       'ul',
       { class: 'list' },
+      totalRow,
       disks.map((d) =>
         h(
           'li',
