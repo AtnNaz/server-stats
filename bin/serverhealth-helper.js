@@ -374,6 +374,8 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
       changes.push('terminal');
     }
 
+    if ('diskAcks' in requested) changes.push('diskAcks');
+
     if (requested.githubBackup) {
       next.githubBackup.tokenSet = await applyGithubBackup(next.githubBackup, token);
       changes.push('githubBackup');
@@ -469,6 +471,7 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
         report: state.report,
         terminal: state.terminal,
         githubBackup: state.githubBackup,
+        diskAcks: state.diskAcks ?? [],
       },
       updates: extra.updates ?? previous.updates ?? null,
       running: extra.running ?? null,

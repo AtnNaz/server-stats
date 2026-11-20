@@ -2,6 +2,8 @@
 // Hem panel (kuyruğa koymadan önce) hem yardımcı (uygulamadan önce) aynı kurallarla doğrular;
 // yardımcı panelin yazdığı dosyaya asla güvenmez.
 
+import { validAcks } from './disk-ack.js';
+
 export const WEEKDAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 export const UPDATE_MODES = ['off', 'security', 'all'];
 export const ACTIONS = ['update', 'reboot', 'refresh', 'report', 'self-update', 'github-backup'];
@@ -48,6 +50,7 @@ export function validateSystemSettings(input) {
     report: (v) => typeof v === 'object' && v !== null,
     terminal: (v) => typeof v === 'object' && v !== null,
     githubBackup: (v) => typeof v === 'object' && v !== null,
+    diskAcks: validAcks,
   });
   errors.push(...top.errors);
   const value = top.value;

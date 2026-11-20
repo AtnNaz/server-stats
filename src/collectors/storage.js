@@ -2,6 +2,7 @@ import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { t } from '../i18n.js';
 import path from 'node:path';
 import { readText } from '../util.js';
+import { smartCounters } from '../disk-ack.js';
 
 // Fiziksel diskler: kimlik ve tür /sys/block'tan, okuma/yazma hızı /proc/diskstats'tan,
 // sağlık bilgisi root zamanlayıcısının yazdığı SMART dosyasından okunur.
@@ -76,7 +77,14 @@ export function summarizeSmart(data) {
   const nvme = data.nvme_smart_health_information_log;
   const passed = data.smart_status?.passed ?? null;
   const reasons = { crit: [], warn: [] };
+  const sectorReasons = new Set();
+  const sector = (list, text) => {
+    list.push(text);
+    sectorReasons.add(text);
+  };
   const summary = {
+    serial: data.serial_number ? String(data.serial_number) : null,
+    counters: smartCounters(data),
     passed,
     temperature: data.temperature?.current ?? nvme?.temperature ?? null,
     powerOnHours: data.power_on_time?.hours ?? nvme?.power_on_hours ?? null,
@@ -103,7 +111,7 @@ export function summarizeSmart(data) {
     if (nvme.available_spare != null && nvme.available_spare_threshold != null && nvme.available_spare < nvme.available_spare_threshold) {
       reasons.crit.push(t('smart.spareLow', { p: nvme.available_spare }));
     }
-    if (nvme.media_errors > 0) reasons.warn.push(t('smart.mediaErrors', { n: nvme.media_errors }));
+    if (nvme.media_errors > 0) sector(reasons.warn, t('smart.mediaErrors', { n: nvme.media_errors }));
   } else if (data.ata_smart_attributes) {
     const reallocated = rawValue(attr(data, 5));
     const reportedUncorrect = rawValue(attr(data, 187));
@@ -111,10 +119,10 @@ export function summarizeSmart(data) {
     const offlineUncorrectable = rawValue(attr(data, 198));
     const crc = rawValue(attr(data, 199));
     Object.assign(summary.attributes, { reallocated, reportedUncorrect, pending, offlineUncorrectable, crcErrors: crc });
-    if (pending > 0) reasons.crit.push(t('smart.pending', { n: pending }));
-    if (offlineUncorrectable > 0) reasons.crit.push(t('smart.offline', { n: offlineUncorrectable }));
-    if (reallocated > 0) reasons.warn.push(t('smart.reallocated', { n: reallocated }));
-    if (reportedUncorrect > 0) reasons.warn.push(t('smart.reported', { n: reportedUncorrect }));
+    if (pending > 0) sector(reasons.crit, t('smart.pending', { n: pending }));
+    if (offlineUncorrectable > 0) sector(reasons.crit, t('smart.offline', { n: offlineUncorrectable }));
+    if (reallocated > 0) sector(reasons.warn, t('smart.reallocated', { n: reallocated }));
+    if (reportedUncorrect > 0) sector(reasons.warn, t('smart.reported', { n: reportedUncorrect }));
     if (crc > 0) reasons.warn.push(t('smart.crc', { n: crc }));
     for (const a of data.ata_smart_attributes.table ?? []) {
       if (a.when_failed === 'now') reasons.crit.push(t('smart.attrFailing', { name: a.name }));
@@ -132,6 +140,9 @@ export function summarizeSmart(data) {
 
   summary.status = reasons.crit.length ? 'crit' : reasons.warn.length ? 'warn' : passed === null ? 'unknown' : 'ok';
   summary.reasons = [...reasons.crit, ...reasons.warn];
+  const other = { crit: reasons.crit.filter((r) => !sectorReasons.has(r)), warn: reasons.warn.filter((r) => !sectorReasons.has(r)) };
+  summary.statusWithoutSectors = other.crit.length ? 'crit' : other.warn.length ? 'warn' : passed === null ? 'unknown' : 'ok';
+  summary.sectorReasons = [...sectorReasons];
   return summary;
 }
 

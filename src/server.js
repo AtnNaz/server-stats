@@ -26,6 +26,7 @@ import { updateSummaryMessages } from './update-summary.js';
 import { createSpeedtest } from './speedtest.js';
 import { createUptime } from './uptime.js';
 import { createDiskHealth, HEALTH_RANGES } from './disk-health.js';
+import { markAcknowledged } from './disk-ack.js';
 import { createImageUpdates, validateDockerRequest } from './docker-protocol.js';
 import { upgrade } from './websocket.js';
 import { createTerminals, terminalAvailable } from './terminal.js';
@@ -775,14 +776,21 @@ function main() {
 
     if (pathname === '/api/stats') {
       const update = updates.status();
+      const system = await readSystemStatus();
+      const current = sampler.current();
+      const storage = current.snapshot?.storage;
+      const devices = markAcknowledged(storage?.devices ?? [], system.settings?.diskAcks);
+      const quiet = new Set(devices.filter((d) => d.smart?.acknowledged).map((d) => d.name));
       return sendJson(req, res, 200, {
         user,
         settings: { language: effective.language, thresholds: effective.thresholds },
         update: update.available ? { latest: update.latest } : null,
-        backup: await backupSummary(await readSystemStatus()),
+        backup: await backupSummary(system),
         uptimeDown: uptime.down(),
-        diskAlerts,
-        ...sampler.current(),
+        diskAlerts: diskAlerts.filter((a) => !quiet.has(a.name)),
+        diskAcks: system.settings?.diskAcks ?? [],
+        ...current,
+        ...(storage?.devices ? { snapshot: { ...current.snapshot, storage: { ...storage, devices } } } : {}),
       });
     }
     if (pathname === '/api/settings') {

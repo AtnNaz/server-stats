@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { analyzeJournal, askOllama, parseBoots } from '../src/report.js';
 import { loadConfig } from '../src/config.js';
+import { smartCounters, acknowledged } from '../src/disk-ack.js';
 
 const STATE_FILE = '/var/lib/serverhealth/system-settings.json';
 const STATUS_FILE = '/var/lib/serverhealth/system.json';
@@ -52,18 +53,7 @@ export function extraFacts(status, smart) {
   };
 }
 
-// SMART'ta bozulmayı gösteren sayaçlar: yedek alana taşınan, bekleyen ve düzeltilemeyen sektörler (SATA),
-// ortam hataları (NVMe).
-const ATA_COUNTERS = { 5: 'reallocated', 187: 'reportedUncorrect', 197: 'pending', 198: 'offlineUncorrectable' };
-export function smartCounters(data) {
-  const out = {};
-  for (const a of data?.ata_smart_attributes?.table ?? []) {
-    if (ATA_COUNTERS[a.id] && Number.isFinite(a.raw?.value)) out[ATA_COUNTERS[a.id]] = a.raw.value;
-  }
-  const nvme = data?.nvme_smart_health_information_log;
-  if (nvme && Number.isFinite(nvme.media_errors)) out.mediaErrors = nvme.media_errors;
-  return out;
-}
+export { smartCounters };
 
 // lsblk ağacından her fiziksel diskin bağlama noktaları (bölümler ve LVM dahil).
 function diskMounts(lsblk) {
@@ -81,7 +71,7 @@ const SYSTEM_MOUNTS = ['/', '/boot', '/boot/efi', '/efi', '/usr', '/var'];
 
 // Disklerin rolü (sistem / veri / kullanılmıyor), SMART sayaçları ve günler içindeki değişimi.
 // history: { [seri no]: [{ date, ...sayaçlar }] } — raporla birlikte saklanır.
-export function diskFacts(smart, lsblk, history = {}, date) {
+export function diskFacts(smart, lsblk, history = {}, date, acks = []) {
   const mounts = diskMounts(lsblk);
   const nextHistory = { ...history };
   const disks = [];
@@ -109,7 +99,9 @@ export function diskFacts(smart, lsblk, history = {}, date) {
     const bad = Object.values(counters).some((v) => v > 0);
     const role = points.some((m) => SYSTEM_MOUNTS.includes(m)) ? 'system' : points.length ? 'data' : 'unused';
     const trend = !bad ? null : !first ? 'new' : Object.keys(changes).length ? 'increasing' : 'stable';
+    const known = bad && d.data.serial_number != null && acknowledged(acks, String(d.data.serial_number), counters);
     disks.push({
+      name: base,
       device: block,
       model: d.data.model_name ?? null,
       role,
@@ -120,16 +112,18 @@ export function diskFacts(smart, lsblk, history = {}, date) {
       trend,
       stableSince: bad && first ? stableSince : null,
       changes,
-      assessment: assessDisk({ smartPassed: d.data.smart_status?.passed, bad, role, trend }),
+      ...(known ? { acknowledged: true } : {}),
+      assessment: assessDisk({ smartPassed: d.data.smart_status?.passed, bad, role, trend, known }),
     });
   }
   return { disks, history: nextHistory };
 }
 
 // Diskin önemi kodla belirlenir; model bunu değiştirmez (küçük modeller ham sayılardan abartılı sonuç çıkarır).
-export function assessDisk({ smartPassed, bad, role, trend }) {
+export function assessDisk({ smartPassed, bad, role, trend, known = false }) {
   if (smartPassed === false) return { level: 'critical', reason: 'smart_failed' };
   if (!bad) return null;
+  if (known) return { level: 'info', reason: 'acknowledged' };
   if (role === 'system') return { level: 'critical', reason: 'system_disk_sectors' };
   if (trend === 'increasing') return { level: 'critical', reason: 'sectors_increasing' };
   return { level: 'warning', reason: trend === 'stable' ? 'data_disk_sectors_stable' : 'data_disk_sectors_first_seen' };
@@ -141,11 +135,19 @@ function shiftDate(date, days) {
   return d.toISOString().slice(0, 10);
 }
 
-export async function buildReport({ entriesText, failedText, status, smart, lsblk = null, bootsText = '', smartHistory = {}, date = null, model, url, language, ask = askOllama, now = Date.now }) {
+export function quietAcknowledged(entries, disks) {
+  const names = disks.filter((d) => d.acknowledged).map((d) => d.name).filter(Boolean);
+  if (!names.length) return entries;
+  const pattern = new RegExp(`/dev/(?:${names.map((n) => n.replace(/[^A-Za-z0-9]/g, '')).join('|')})(?![A-Za-z0-9])`);
+  return entries.filter((e) => !(/^smartd$/.test(String(e.SYSLOG_IDENTIFIER ?? '')) || /^smart(?:d|montools)\.service$/.test(String(e._SYSTEMD_UNIT ?? ''))) || !pattern.test(Array.isArray(e.MESSAGE) ? Buffer.from(e.MESSAGE.filter(Number.isInteger)).toString('utf8') : String(e.MESSAGE ?? '')));
+}
+
+export async function buildReport({ entriesText, failedText, status, smart, lsblk = null, bootsText = '', smartHistory = {}, diskAcks = [], date = null, model, url, language, ask = askOllama, now = Date.now }) {
   const started = now();
   const boots = parseBoots(bootsText, started);
-  const { disks, history } = diskFacts(smart, lsblk, smartHistory, date ?? localDate(started));
-  const facts = { ...analyzeJournal(parseJournalJson(entriesText), { boots }), failedUnits: parseFailedUnits(failedText), ...extraFacts(status, smart), disks };
+  const { disks, history } = diskFacts(smart, lsblk, smartHistory, date ?? localDate(started), diskAcks);
+  const entries = quietAcknowledged(parseJournalJson(entriesText), disks);
+  const facts = { ...analyzeJournal(entries, { boots }), failedUnits: parseFailedUnits(failedText), ...extraFacts(status, smart), disks: disks.map(({ name, ...d }) => d) };
   let ai = null;
   let aiError = null;
   if (!model) aiError = 'model_missing';
@@ -187,7 +189,7 @@ async function main() {
   } catch {
     /* lsblk yoksa diskin rolü bilinmez */
   }
-  const { smartHistory: nextHistory, ...report } = await buildReport({ entriesText, failedText, status, smart, lsblk, bootsText, smartHistory: smartHistory ?? {}, model, url: config.ollama.url, language });
+  const { smartHistory: nextHistory, ...report } = await buildReport({ entriesText, failedText, status, smart, lsblk, bootsText, smartHistory: smartHistory ?? {}, diskAcks: Array.isArray(state.diskAcks) ? state.diskAcks : [], model, url: config.ollama.url, language });
   const date = localDate(report.createdAt);
 
   await mkdir(outDir, { recursive: true });

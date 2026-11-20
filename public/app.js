@@ -818,18 +818,53 @@ function fmtHours(hours) {
 const fmtAgo = (ts) => t('time.ago', { d: fmtDuration(Math.max(0, (Date.now() - ts) / 1000)) });
 const metric = (label, value, title) => h('div', null, h('dt', null, label), h('dd', { title: title ?? value }, value));
 
+const smartLevel = (sm) => (sm?.acknowledged ? sm.statusWithoutSectors ?? sm.status : sm?.status);
+const diskAckPending = new Map();
+
+function ackCounters(sm) {
+  return Object.fromEntries(Object.entries(sm.counters ?? {}).filter(([, v]) => Number.isInteger(v) && v >= 0));
+}
+
+async function setDiskAck(d, on) {
+  const sm = d.smart;
+  const rest = (lastData?.diskAcks ?? []).filter((a) => a.serial !== sm.serial);
+  const diskAcks = on ? [...rest, { serial: sm.serial, model: String(d.model ?? '').slice(0, 128), counters: ackCounters(sm), at: Date.now() }] : rest;
+  diskAckPending.set(sm.serial, { on, at: Date.now(), failed: false });
+  if (lastData) render(lastData);
+  const res = await api('/api/system', { diskAcks });
+  if (!res.ok) diskAckPending.set(sm.serial, { on, at: Date.now(), failed: true });
+  if (lastData) render(lastData);
+}
+
+function diskAckRow(d) {
+  const sm = d.smart;
+  if (!sm?.serial || !sm.sectorReasons?.length) return null;
+  const known = (lastData?.diskAcks ?? []).some((a) => a.serial === sm.serial);
+  const pending = diskAckPending.get(sm.serial);
+  if (pending && (pending.on === known || Date.now() - pending.at > 120_000)) {
+    if (pending.on === known || !pending.failed) diskAckPending.delete(sm.serial);
+  }
+  const p = diskAckPending.get(sm.serial);
+  if (p) return h('div', { class: 'ack-row' }, h('span', { class: 'muted small' }, p.failed ? t('set.saveFailed') : t('set.applying')));
+  if (sm.acknowledged) {
+    return h('div', { class: 'ack-row' }, h('span', { class: 'muted small' }, t('disk.ack.on', { date: fmtWhen(sm.ackedAt) })), button(t('disk.ack.undo'), null, () => setDiskAck(d, false)));
+  }
+  return h('div', { class: 'ack-row' }, h('span', { class: 'muted small' }, known ? t('disk.ack.grew') : t('disk.ack.hint')), button(t('disk.ack.set'), null, () => setDiskAck(d, true)));
+}
+
 function physTile(d) {
   const sm = d.smart;
-  const [cls, iconName, labelKey] = sm ? SMART_STATES[sm.status] ?? SMART_STATES.unknown : ['', 'off', 'smart.none'];
-  const problem = sm && (sm.status === 'warn' || sm.status === 'crit');
+  const status = smartLevel(sm);
+  const [cls, iconName, labelKey] = sm ? SMART_STATES[status] ?? SMART_STATES.unknown : ['', 'off', 'smart.none'];
+  const problem = sm && (status === 'warn' || status === 'crit');
   return h(
     'div',
-    { class: `phys ${problem ? sm.status : ''}` },
+    { class: `phys ${problem ? status : ''}` },
     h(
       'div',
       { class: 'phys-head' },
       h('div', { class: 'phys-title' }, h('strong', null, diskLabel(d)), h('span', { title: d.model }, `${d.model} · ${fmtDiskSize(d.size)} · /dev/${d.name}`)),
-      h('div', { class: 'phys-tags' }, h('span', { class: 'tag' }, d.type), sm?.standby ? tag('', 'off', t('disk.standby')) : null, tag(cls, iconName, t(labelKey))),
+      h('div', { class: 'phys-tags' }, h('span', { class: 'tag' }, d.type), sm?.standby ? tag('', 'off', t('disk.standby')) : null, sm?.acknowledged ? tag('', 'ok', t('disk.ack.tag')) : null, tag(cls, iconName, t(labelKey))),
     ),
     d.mounts.length ? h('div', { class: 'mono muted' }, d.mounts.join('  ')) : h('div', { class: 'muted small' }, t('disk.notMounted')),
     h(
@@ -842,7 +877,8 @@ function physTile(d) {
       metric(t('disk.powerOn'), fmtHours(sm?.powerOnHours), sm?.powerOnHours != null ? t('dur.hoursLong', { n: num0.format(sm.powerOnHours) }) : undefined),
       metric(t('disk.wear'), sm?.wearPercent != null ? fmtPct(sm.wearPercent) : '—'),
     ),
-    sm?.reasons?.length ? h('ul', { class: 'reasons' }, sm.reasons.map((r) => h('li', null, r))) : null,
+    sm?.reasons?.length ? h('ul', { class: `reasons${sm.acknowledged ? ' acked' : ''}` }, sm.reasons.map((r) => h('li', null, r))) : null,
+    diskAckRow(d),
     sm && (sm.writtenBytes != null || sm.powerCycles != null)
       ? h(
           'div',
@@ -905,7 +941,7 @@ function renderStorage(st, history, capacity) {
       );
   // Sorunlu diskler başa alınır.
   const rank = { crit: 0, warn: 1 };
-  const sorted = [...devices].sort((a, b) => (rank[a.smart?.status] ?? 2) - (rank[b.smart?.status] ?? 2));
+  const sorted = [...devices].sort((a, b) => (rank[smartLevel(a.smart)] ?? 2) - (rank[smartLevel(b.smart)] ?? 2));
   fill(body, notice, h('div', { class: 'phys-grid' }, sorted.map(physTile)));
 }
 
@@ -975,11 +1011,13 @@ function renderAlerts(s) {
   const items = [];
   for (const d of s.storage?.devices ?? []) {
     const sm = d.smart;
-    if (sm && (sm.status === 'crit' || sm.status === 'warn')) {
+    const status = smartLevel(sm);
+    if (sm && (status === 'crit' || status === 'warn')) {
+      const reasons = sm.acknowledged ? sm.reasons.filter((r) => !(sm.sectorReasons ?? []).includes(r)) : sm.reasons;
       items.push({
-        level: sm.status,
-        title: t(sm.status === 'crit' ? 'alert.diskCrit' : 'alert.diskWarn', { disk: diskLabel(d) }),
-        detail: `${d.model} · ${sm.reasons.join(' · ')}`,
+        level: status,
+        title: t(status === 'crit' ? 'alert.diskCrit' : 'alert.diskWarn', { disk: diskLabel(d) }),
+        detail: `${d.model} · ${reasons.join(' · ')}`,
         href: '#/depolama',
       });
     }
@@ -1204,7 +1242,7 @@ function renderBadges(s) {
   const disks = (s.system?.disks ?? []).filter((d) => !d.error);
   const fullest = Math.max(0, ...disks.map((d) => d.percent ?? 0));
   const diskLevel = level(fullest, ...TH.disk);
-  const smartStates = (s.storage?.devices ?? []).map((d) => d.smart?.status);
+  const smartStates = (s.storage?.devices ?? []).map((d) => smartLevel(d.smart));
   const smartCrit = smartStates.filter((x) => x === 'crit').length;
   const smartWarn = smartStates.filter((x) => x === 'warn').length;
   // SMART sorunu, doluluktan daha önemlidir.
