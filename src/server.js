@@ -64,6 +64,11 @@ const ASSETS = [
   { route: '/i18n.js', file: 'i18n.js', type: 'text/javascript; charset=utf-8', public: true },
   { route: '/style.css', file: 'style.css', type: 'text/css; charset=utf-8', public: true },
   { route: '/favicon.svg', file: 'favicon.svg', type: 'image/svg+xml', public: true },
+  { route: '/manifest.webmanifest', file: 'manifest.webmanifest', type: 'application/manifest+json; charset=utf-8', public: true },
+  { route: '/icon-192.png', file: 'icon-192.png', type: 'image/png', public: true },
+  { route: '/icon-512.png', file: 'icon-512.png', type: 'image/png', public: true },
+  { route: '/icon-maskable.png', file: 'icon-maskable.png', type: 'image/png', public: true },
+  { route: '/apple-touch-icon.png', file: 'apple-touch-icon.png', type: 'image/png', public: true },
   { route: '/terminal', file: 'terminal.html', type: 'text/html; charset=utf-8', headers: 'terminal' },
   { route: '/terminal.js', file: 'terminal.js', type: 'text/javascript; charset=utf-8' },
   { route: '/vendor/xterm.js', file: 'vendor/xterm.js', type: 'text/javascript; charset=utf-8' },
@@ -73,7 +78,7 @@ const ASSETS = [
 
 const SECURITY_HEADERS = {
   'Content-Security-Policy':
-    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; " +
+    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; manifest-src 'self'; connect-src 'self'; frame-src 'self'; " +
     "base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
@@ -86,7 +91,7 @@ const SECURITY_HEADERS = {
 const ASSET_HEADERS = {
   terminal: {
     'Content-Security-Policy':
-      "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; " +
+      "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; manifest-src 'self'; connect-src 'self'; " +
       "base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
     'X-Frame-Options': 'SAMEORIGIN',
   },

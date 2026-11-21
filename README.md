@@ -88,6 +88,15 @@ Panel kurulduğu makineyi kendisi tanır; sunucuya özgü bir ayar gerektirmez:
 - "Beni hatırla" seçilirse oturum 30 gün sürer ve panel kullanıldıkça yeniden 30 güne uzar; seçilmezse tarayıcı kapanana kadar (en çok 12 saat) sürer. Oturumlar panelin durum klasöründe (`sessions.json`, yalnızca panel kullanıcısı okuyabilir) saklandığı için panel güncellenince ya da sunucu yeniden başlayınca kapanmaz. Dosyada çerezdeki belirtecin kendisi değil yalnızca özeti durur. Şifre değişince (arayüzden ya da `config.json`'dan) bütün eski oturumlar geçersiz olur.
 - Çıkış için sağ üstteki kullanıcı menüsünden **Çıkış yap**'ı seçin.
 
+### Uygulama olarak yükleme
+
+Panel, adres çubuğu olmadan kendi penceresinde açılan bir uygulama olarak yüklenebilir. Tarayıcılar bunu yalnızca HTTPS (ya da `localhost`) üzerinde sunar; düz HTTP adresinde yükleme seçeneği çıkmaz (bkz. [HTTPS](#https)).
+
+- **Chrome / Edge (bilgisayar):** adres çubuğunun sağındaki yükle simgesi ya da menü → "Uygulamayı yükle"
+- **Safari (Mac):** Dosya → "Dock'a Ekle"
+- **iPhone / iPad (Safari):** Paylaş → "Ana Ekrana Ekle"
+- **Android (Chrome):** menü → "Uygulamayı yükle" ya da "Ana ekrana ekle"
+
 ### Güncelleme
 
 Panel iki günde bir yeni sürüm olup olmadığına bakar. Yeni sürüm varsa Ayarlar → Hakkında'daki **Güncellemeyi kur** düğmesiyle kurulabilir: root yardımcısı kurulu depodaki son sürümü GitHub'dan indirir ve kurar; panel birkaç saniyeliğine yeniden başlar.
