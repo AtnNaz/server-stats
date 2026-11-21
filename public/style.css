@@ -1212,6 +1212,7 @@ body:not([data-route="genel"]) #ov-edit { display: none; }
 .files-crumbs .sep { color: var(--muted); }
 .files-path { width: 100%; margin-bottom: 10px; font-family: var(--mono); font-size: 12.5px; }
 .files-table td, .files-table th { vertical-align: middle; }
+.files-name-td { max-width: 0; width: 55%; }
 .files-name-cell { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .files-name-cell .i { flex: none; width: 18px; height: 18px; }
 .files-ic-dir { color: var(--accent); }

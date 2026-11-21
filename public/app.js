@@ -4131,7 +4131,7 @@ function fileRow(d, e) {
   const nameEl = dir ? h('a', { href: filesHash(full), class: 'files-name' }, e.name) : fileLike ? h('a', { href: `/api/files/download?path=${encodeURIComponent(full)}`, class: 'files-name', download: e.name }, e.name) : h('span', { class: 'files-name' }, e.name);
   const kindIcon = icon(e.type === 'link' ? 'link' : dir ? 'folder' : 'file');
   kindIcon.classList.add(dir ? 'files-ic-dir' : 'files-ic-file');
-  const nameCell = h('td', { class: 'files-name-cell' }, kindIcon, nameEl, e.type === 'link' && e.target ? h('span', { class: 'muted small files-target' }, `→ ${e.target}`) : null);
+  const nameCell = h('div', { class: 'files-name-cell' }, kindIcon, nameEl, e.type === 'link' && e.target ? h('span', { class: 'muted small files-target' }, `→ ${e.target}`) : null);
   const act = (name, label, fn) => {
     const b = h('button', { type: 'button', class: 'icon-btn', title: label, 'aria-label': `${label}: ${e.name}` }, icon(name));
     b.addEventListener('click', fn);
@@ -4144,7 +4144,7 @@ function fileRow(d, e) {
     d.writable ? act('pencil', t('files.rename'), () => startRename(nameCell, d, e)) : null,
     d.writable ? act('trash', t('files.delete'), () => deleteEntry(d, e, dir)) : null,
   );
-  return h('tr', null, nameCell, h('td', { class: 'num' }, e.size == null || dir ? '—' : fmtBytes(e.size)), h('td', { class: 'files-col-date' }, e.mtime ? fileDate.format(new Date(e.mtime)) : '—'), h('td', { class: 'files-col-mode mono' }, e.mode ?? '—'), actions);
+  return h('tr', null, h('td', { class: 'files-name-td' }, nameCell), h('td', { class: 'num' }, e.size == null || dir ? '—' : fmtBytes(e.size)), h('td', { class: 'files-col-date' }, e.mtime ? fileDate.format(new Date(e.mtime)) : '—'), h('td', { class: 'files-col-mode mono' }, e.mode ?? '—'), actions);
 }
 
 function inlineName(value, onSubmit) {
@@ -4186,14 +4186,14 @@ function startMkdir() {
   const d = filesState.data;
   if (!d) return;
   const tbody = $('files-tbody');
-  const cell = h('td', { class: 'files-name-cell', colspan: '5' });
+  const cell = h('div', { class: 'files-name-cell' });
   fill(cell, icon('folder'), ...inlineName(t('files.newFolder'), async (name) => {
     const res = await api('/api/files/op', { op: 'mkdir', path: filePath(d.path, name) });
     if (!res.ok) return res.data?.code ?? 'failed';
     await loadFiles();
     return null;
   }));
-  const row = h('tr', { class: 'files-new' }, cell);
+  const row = h('tr', { class: 'files-new' }, h('td', { colspan: '5' }, cell));
   if (tbody) tbody.prepend(row);
   else fill(filesState.el.body, h('div', { class: 'table-wrap' }, h('table', { class: 'files-table' }, h('tbody', { id: 'files-tbody' }, row))));
 }
