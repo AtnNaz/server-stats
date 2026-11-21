@@ -283,6 +283,24 @@ export function validateAi(raw) {
   return { status, summary, findings };
 }
 
+export function hardCritical(facts) {
+  return Boolean(facts?.failedUnits?.length || facts?.oomKills?.length || facts?.diskErrors?.length || facts?.smartFailing?.length || (facts?.disks ?? []).some((d) => d.assessment?.level === 'critical'));
+}
+
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+export function settleAi(ai, facts) {
+  if (!ai) return ai;
+  const words = (facts?.disks ?? []).filter((d) => d.acknowledged).flatMap((d) => [d.device, d.model]).filter(Boolean).map((w) => escapeRe(String(w)));
+  const mentions = words.length ? new RegExp(`(?:^|[^A-Za-z0-9])(?:${words.join('|')})(?![A-Za-z0-9])`, 'i') : null;
+  const capped = !hardCritical(facts);
+  const findings = ai.findings
+    .filter((f) => !mentions || !mentions.test(`${f.title} ${f.evidence}`))
+    .map((f) => (capped && f.severity === 'critical' ? { ...f, severity: 'warning' } : f));
+  const status = findings.some((f) => f.severity === 'critical') ? 'critical' : findings.some((f) => f.severity === 'warning') ? 'attention' : 'good';
+  return { ...ai, status, findings };
+}
+
 // Ollama adresi yalnızca bu makine olabilir: kayıtlar başka bir sunucuya gönderilemez.
 export function isLoopbackUrl(value) {
   try {

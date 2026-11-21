@@ -86,3 +86,44 @@ test('rapor olgularında onaylı disk adı taşınmaz', async () => {
   assert.equal('name' in r.facts.disks[0], false);
   assert.equal(r.aiError, 'model_missing');
 });
+
+test('model, somut kanıt yoksa kritik diyemez; bilinen diskten söz eden bulgu düşer', async () => {
+  const { settleAi, hardCritical } = await import('../src/report.js');
+  const ai = (findings) => ({ status: 'critical', summary: 'ozet', findings: findings.map(([title, severity]) => ({ title, severity, evidence: '', recommendation: '' })) });
+  const quiet = { disks: [{ device: 'sda', model: 'HDD', acknowledged: true, assessment: { level: 'info', reason: 'acknowledged' } }] };
+  let r = settleAi(ai([['Kernel uyarisi', 'critical'], ['/dev/sda sektorleri', 'critical'], ['HDD diski', 'warning'], ['sdab notu', 'info']]), quiet);
+  assert.deepEqual(r.findings.map((f) => [f.title, f.severity]), [['Kernel uyarisi', 'warning'], ['sdab notu', 'info']]);
+  assert.equal(r.status, 'attention');
+  r = settleAi(ai([['Servis coktu', 'critical']]), { failedUnits: ['x.service'] });
+  assert.equal(r.findings[0].severity, 'critical');
+  assert.equal(r.status, 'critical');
+  assert.equal(settleAi(ai([['Bilgi', 'info']]), {}).status, 'good');
+  assert.equal(settleAi(null, {}), null);
+  assert.equal(hardCritical({ disks: [{ assessment: { level: 'critical' } }] }), true);
+  assert.equal(hardCritical({ disks: [{ assessment: { level: 'warning' } }], serviceFailures: [{ unit: 'a', count: 9 }] }), false);
+});
+
+test('eski rapor güncel kurallarla yeniden değerlendirilir', async () => {
+  const { reassessFacts, reassessReport } = await import('../bin/serverhealth-report.js');
+  const facts = {
+    disks: [{ device: 'sda', model: 'HDD', role: 'data', smartPassed: true, counters: { reallocated: 83, pending: 2, offlineUncorrectable: 2 }, assessment: { level: 'warning', reason: 'data_disk_sectors_stable' } }],
+    groups: [
+      { unit: 'smartmontools.service', count: 48, sample: 'Device: /dev/sda [SAT], 2 Currently unreadable (pending) sectors' },
+      { unit: 'kernel', count: 1, sample: 'hrtimer: interrupt took 3051 ns' },
+    ],
+  };
+  const f = reassessFacts(facts, [ack]);
+  assert.equal(f.disks[0].acknowledged, true);
+  assert.deepEqual(f.disks[0].assessment, { level: 'info', reason: 'acknowledged' });
+  assert.deepEqual(f.groups.map((g) => g.unit), ['kernel']);
+  assert.equal(reassessFacts({ ...facts, disks: [{ ...facts.disks[0], counters: { pending: 5 } }] }, [ack]).disks[0].acknowledged, undefined);
+  assert.equal(reassessFacts(facts, []).groups.length, 2);
+
+  const old = { date: '2026-11-02', model: 'eski', language: 'tr', facts, ai: { status: 'critical', summary: 's', findings: [{ title: 'Kritik /dev/sda', severity: 'critical', evidence: '', recommendation: '' }] } };
+  let seen = null;
+  const fresh = await reassessReport(old, { acks: [ack], model: 'yeni', url: 'http://127.0.0.1:11434', language: 'tr', now: () => 5, ask: async (a) => ((seen = a), { status: 'critical', summary: 'yeni', findings: [{ title: 'Kernel', severity: 'critical', evidence: '', recommendation: '' }] }) });
+  assert.equal(seen.facts.disks[0].acknowledged, true);
+  assert.deepEqual([fresh.model, fresh.ai.status, fresh.ai.findings[0].severity, fresh.reassessedAt], ['yeni', 'attention', 'warning', 5]);
+  const offline = await reassessReport(old, { acks: [ack], model: 'yeni', url: 'http://127.0.0.1:11434', language: 'tr', ask: async () => { throw new Error('ollama_unreachable'); } });
+  assert.deepEqual([offline.model, offline.ai.status, offline.ai.findings.length], ['eski', 'good', 0]);
+});

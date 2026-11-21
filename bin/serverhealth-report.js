@@ -6,9 +6,9 @@ import { execFile } from 'node:child_process';
 import { readFile, writeFile, rename, mkdir, readdir, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { analyzeJournal, askOllama, parseBoots } from '../src/report.js';
+import { analyzeJournal, askOllama, parseBoots, settleAi } from '../src/report.js';
 import { loadConfig } from '../src/config.js';
-import { smartCounters, acknowledged } from '../src/disk-ack.js';
+import { smartCounters, acknowledged, ACK_COUNTERS } from '../src/disk-ack.js';
 
 const STATE_FILE = '/var/lib/serverhealth/system-settings.json';
 const STATUS_FILE = '/var/lib/serverhealth/system.json';
@@ -135,11 +135,26 @@ function shiftDate(date, days) {
   return d.toISOString().slice(0, 10);
 }
 
+const devicePattern = (names) => (names.length ? new RegExp(`/dev/(?:${names.map((n) => String(n).replace(/[^A-Za-z0-9]/g, '')).join('|')})(?![A-Za-z0-9])`) : null);
+const SMART_UNIT = /^smart(?:d|montools)(?:\.service)?$/;
+
 export function quietAcknowledged(entries, disks) {
-  const names = disks.filter((d) => d.acknowledged).map((d) => d.name).filter(Boolean);
-  if (!names.length) return entries;
-  const pattern = new RegExp(`/dev/(?:${names.map((n) => n.replace(/[^A-Za-z0-9]/g, '')).join('|')})(?![A-Za-z0-9])`);
-  return entries.filter((e) => !(/^smartd$/.test(String(e.SYSLOG_IDENTIFIER ?? '')) || /^smart(?:d|montools)\.service$/.test(String(e._SYSTEMD_UNIT ?? ''))) || !pattern.test(Array.isArray(e.MESSAGE) ? Buffer.from(e.MESSAGE.filter(Number.isInteger)).toString('utf8') : String(e.MESSAGE ?? '')));
+  const pattern = devicePattern(disks.filter((d) => d.acknowledged).map((d) => d.name).filter(Boolean));
+  if (!pattern) return entries;
+  return entries.filter((e) => !(/^smartd$/.test(String(e.SYSLOG_IDENTIFIER ?? '')) || SMART_UNIT.test(String(e._SYSTEMD_UNIT ?? ''))) || !pattern.test(Array.isArray(e.MESSAGE) ? Buffer.from(e.MESSAGE.filter(Number.isInteger)).toString('utf8') : String(e.MESSAGE ?? '')));
+}
+
+export function reassessFacts(facts, acks = []) {
+  const disks = (facts?.disks ?? []).map((d) => {
+    if (d.acknowledged || d.smartPassed === false) return d;
+    const ack = acks.find((a) => a.model && a.model === d.model);
+    const bad = Object.values(d.counters ?? {}).some((v) => v > 0);
+    if (!ack || !bad || !ACK_COUNTERS.every((k) => (d.counters?.[k] ?? 0) <= (ack.counters?.[k] ?? 0))) return d;
+    return { ...d, acknowledged: true, assessment: { level: 'info', reason: 'acknowledged' } };
+  });
+  const pattern = devicePattern(disks.filter((d) => d.acknowledged).map((d) => d.device).filter(Boolean));
+  const groups = pattern ? (facts?.groups ?? []).filter((g) => !(SMART_UNIT.test(String(g.unit ?? '')) && pattern.test(String(g.sample ?? '')))) : facts?.groups;
+  return { ...facts, disks, ...(groups ? { groups } : {}) };
 }
 
 export async function buildReport({ entriesText, failedText, status, smart, lsblk = null, bootsText = '', smartHistory = {}, diskAcks = [], date = null, model, url, language, ask = askOllama, now = Date.now }) {
@@ -153,7 +168,7 @@ export async function buildReport({ entriesText, failedText, status, smart, lsbl
   if (!model) aiError = 'model_missing';
   else {
     try {
-      ai = await ask({ url, model, facts, language });
+      ai = settleAi(await ask({ url, model, facts, language }), facts);
     } catch (err) {
       aiError = err.name === 'TimeoutError' ? 'timeout' : /^(ollama_|model_missing|invalid_ai_output)/.test(err.message) ? err.message : 'ollama_unreachable';
     }
@@ -164,6 +179,40 @@ export async function buildReport({ entriesText, failedText, status, smart, lsbl
 // Sunucunun yerel tarihi (YYYY-MM-DD); aynı gün tekrar oluşturulursa rapor güncellenir.
 export const localDate = (ms) => new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms));
 
+export async function reassessReport(report, { acks = [], model, url, language, ask = askOllama, now = Date.now }) {
+  const facts = reassessFacts(report.facts ?? {}, acks);
+  let { ai = null, aiError = null } = report;
+  let used = report.model ?? null;
+  if (model) {
+    try {
+      ai = await ask({ url, model, facts, language: report.language ?? language });
+      aiError = null;
+      used = model;
+    } catch (err) {
+      console.warn(`${report.date}: model yanıt vermedi (${err.message}), eski değerlendirme düzenleniyor`);
+    }
+  }
+  return { ...report, model: used, facts, ai: settleAi(ai, facts), aiError, reassessedAt: now() };
+}
+
+async function reassessAll({ outDir, acks, model, url, language }) {
+  const keep = path.join(outDir, 'original');
+  await mkdir(keep, { recursive: true, mode: 0o750 });
+  const names = (await readdir(outDir)).filter((n) => /^\d{4}-\d{2}-\d{2}\.json$/.test(n)).sort();
+  for (const name of names) {
+    const file = path.join(outDir, name);
+    const text = await readFile(file, 'utf8');
+    await writeFile(path.join(keep, name), text, { flag: 'wx', mode: 0o640 }).catch((err) => {
+      if (err.code !== 'EEXIST') throw err;
+    });
+    const before = JSON.parse(text);
+    const after = await reassessReport({ date: name.slice(0, 10), ...before }, { acks, model, url, language });
+    await writeFile(`${file}.tmp`, `${JSON.stringify(after)}\n`, { mode: 0o640 });
+    await rename(`${file}.tmp`, file);
+    console.log(`${name}: ${before.ai?.status ?? '-'} -> ${after.ai?.status ?? '-'} (${after.model ?? '-'})`);
+  }
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const opt = (name, fallback) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : fallback);
@@ -172,6 +221,8 @@ async function main() {
   const state = (await readJson(STATE_FILE)) ?? {};
   const model = opt('--model', state.report?.model ?? '');
   const language = (await readJson(PANEL_SETTINGS))?.language ?? config.language ?? 'tr';
+  const acks = Array.isArray(state.diskAcks) ? state.diskAcks : [];
+  if (argv.includes('--reassess')) return reassessAll({ outDir, acks, model: argv.includes('--no-ai') ? '' : model, url: config.ollama.url, language });
 
   const historyFile = path.join(outDir, 'smart-history.json');
   const [entriesText, failedText, status, smart, lsblkText, bootsText, smartHistory] = await Promise.all([
@@ -189,7 +240,7 @@ async function main() {
   } catch {
     /* lsblk yoksa diskin rolü bilinmez */
   }
-  const { smartHistory: nextHistory, ...report } = await buildReport({ entriesText, failedText, status, smart, lsblk, bootsText, smartHistory: smartHistory ?? {}, diskAcks: Array.isArray(state.diskAcks) ? state.diskAcks : [], model, url: config.ollama.url, language });
+  const { smartHistory: nextHistory, ...report } = await buildReport({ entriesText, failedText, status, smart, lsblk, bootsText, smartHistory: smartHistory ?? {}, diskAcks: acks, model, url: config.ollama.url, language });
   const date = localDate(report.createdAt);
 
   await mkdir(outDir, { recursive: true });

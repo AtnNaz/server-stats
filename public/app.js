@@ -2368,7 +2368,7 @@ function renderReport(r) {
       'article',
       { class: 'card' },
       h('div', { class: 'report-head' }, h('h2', null, dayFormat.format(reportDate(r.date))), st ? tag(st[0], st[0], t(st[1])) : null, h('div', { class: 'actions' }, genStatus, pdfButton(r), generate)),
-      h('p', { class: 'muted small' }, t('rep.meta', { model: r.model ?? '—', time: dateTimeFormat.format(new Date(r.createdAt)), seconds: Math.max(1, Math.round((r.durationMs ?? 0) / 1000)) })),
+      h('p', { class: 'muted small' }, t('rep.meta', { model: r.model ?? '—', time: dateTimeFormat.format(new Date(r.createdAt)), seconds: Math.max(1, Math.round((r.durationMs ?? 0) / 1000)) }), r.reassessedAt ? ` · ${t('rep.reassessed', { time: dateTimeFormat.format(new Date(r.reassessedAt)) })}` : null),
       ai,
       h('div', { class: 'report-section' }, h('h3', null, t('rep.facts')), h('div', { class: 'fact-tiles' }, tiles.map(([v, k]) => h('div', null, h('b', null, num0.format(v)), h('span', null, t(k)))))),
       factTable(t('rep.tFailedUnits'), [[t('rep.cUnit'), 'unit']], (f.failedUnits ?? []).map((unit) => ({ unit }))),
