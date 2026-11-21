@@ -97,6 +97,24 @@ export function createDockerHelper({ call = dockerApi() } = {}) {
     return { containers };
   }
 
+  async function traffic() {
+    const raw = (await list()).filter((c) => c.State === 'running');
+    const containers = [];
+    await Promise.all(
+      raw.map(async (c) => {
+        try {
+          const r = await call('GET', `/containers/${c.Id}/stats?stream=false&one-shot=true`, { timeout: 10_000 });
+          if (r.status !== 200 || !r.body?.networks) return;
+          const s = statsSummary(r.body);
+          containers.push({ id: String(c.Id).slice(0, 12), name: summarizeContainer(c).name, rx: s.netRx, tx: s.netTx });
+        } catch {
+          return;
+        }
+      }),
+    );
+    return { containers };
+  }
+
   async function action(q) {
     // Yalnızca var olan bir konteyner için; ad değil kimlik ile.
     const raw = await list();
@@ -111,6 +129,7 @@ export function createDockerHelper({ call = dockerApi() } = {}) {
   return {
     async handle(q) {
       if (q.op === 'overview') return overview();
+      if (q.op === 'traffic') return traffic();
       if (q.op === 'action') return action(q);
       throw fail('invalid');
     },

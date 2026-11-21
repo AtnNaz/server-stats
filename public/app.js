@@ -109,6 +109,16 @@ const ICONS = {
   key: '<circle cx="8" cy="15" r="4"/><path d="m11 12 8.5-8.5M16 7l2.5 2.5M14 9l2 2"/>',
   list: '<path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.6v.1"/>',
+  folder: '<path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>',
+  file: '<path d="M6.5 3.5h7l4 4v13h-11z"/><path d="M13.5 3.5v4h4"/>',
+  link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7L11.5 6.8"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.5-1.5"/>',
+  upload: '<path d="M12 15V4M7.5 8.5 12 4l4.5 4.5M5 19.5h14"/>',
+  trash: '<path d="M4.5 6.5h15M9.5 6.5V4.5h5v2M6.5 6.5l1 13h9l1-13"/>',
+  pencil: '<path d="m14.5 5.5 4 4L8 20H4v-4z"/>',
+  up: '<path d="M12 19.5v-15M6.5 10 12 4.5 17.5 10"/>',
+  home: '<path d="M4 11 12 4l8 7v9h-5.5v-5.5h-5V20H4z"/>',
+  refresh: '<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4.5v4h-4"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
   disk: '<ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',
 };
 const iconTemplate = document.createElement('template');
@@ -144,6 +154,94 @@ function table(headers, rows) {
       h('tbody', null, rows),
     ),
   );
+}
+
+const THEME_KEY = 'serverhealth-theme';
+const PALETTE_KEY = 'serverhealth-palette';
+const ACCENT_KEY = 'serverhealth-accent';
+const OVERVIEW_KEY = 'serverhealth-overview';
+const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+const PALETTES = {
+  default: ['#f4f4f1', '#0d0d0d'],
+  navy: ['#eef2f7', '#0b1120'],
+  oled: ['#ffffff', '#000000'],
+  sand: ['#f3efe6', '#15120d'],
+  forest: ['#eef3ee', '#0b120d'],
+  contrast: ['#ffffff', '#000000'],
+};
+const ACCENTS = { blue: '#2a78d6', teal: '#0f8080', green: '#1d8137', purple: '#7448d6', pink: '#c2387a', orange: '#b35609' };
+const OVERVIEW_CARDS = ['kpis', 'load-card', 'disk-card', 'svc-card', 'net-card', 'traffic-card', 'temp-card', 'fan-card', 'gpu-card', 'io-card', 'phys-card', 'proc-card', 'ports-card'];
+const OVERVIEW_DEFAULT = ['kpis', 'load-card', 'disk-card', 'svc-card'];
+
+function readPref(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writePref(key, value) {
+  try {
+    if (value == null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch {
+    return;
+  }
+}
+
+function applyAppearance() {
+  const root = document.documentElement;
+  const theme = readPref(THEME_KEY);
+  const palette = readPref(PALETTE_KEY);
+  const accent = readPref(ACCENT_KEY);
+  if (theme === 'light' || theme === 'dark') root.dataset.theme = theme;
+  else delete root.dataset.theme;
+  root.dataset.mode = theme === 'light' || theme === 'dark' ? theme : darkQuery.matches ? 'dark' : 'light';
+  if (palette && PALETTES[palette]) root.dataset.palette = palette;
+  else delete root.dataset.palette;
+  if (accent && ACCENTS[accent]) root.dataset.accent = accent;
+  else delete root.dataset.accent;
+  const page = getComputedStyle(root).getPropertyValue('--page').trim();
+  for (const meta of document.querySelectorAll('meta[name="theme-color"]')) meta.setAttribute('content', page);
+  redrawCharts();
+}
+
+function overviewLayout() {
+  try {
+    const saved = JSON.parse(readPref(OVERVIEW_KEY));
+    if (Array.isArray(saved)) return saved.filter((id, i) => OVERVIEW_CARDS.includes(id) && saved.indexOf(id) === i);
+  } catch {
+    return [...OVERVIEW_DEFAULT];
+  }
+  return [...OVERVIEW_DEFAULT];
+}
+
+function saveOverview(layout) {
+  writePref(OVERVIEW_KEY, layout ? JSON.stringify(layout) : null);
+  applyOverview();
+}
+
+const overviewHas = (id) => overviewLayout().includes(id);
+
+function overviewName(id) {
+  if (id === 'kpis') return t('look.kpis');
+  return $(id)?.querySelector('.card-title')?.textContent.trim() || id;
+}
+
+function applyOverview() {
+  const layout = overviewLayout();
+  for (const id of OVERVIEW_CARDS) {
+    const el = $(id);
+    if (!el) continue;
+    el.dataset.homePages ??= el.dataset.pages ?? '';
+    const pages = new Set(el.dataset.homePages.split(' ').filter((p) => p && p !== 'genel'));
+    const i = layout.indexOf(id);
+    if (i >= 0) pages.add('genel');
+    el.dataset.pages = [...pages].join(' ');
+    el.style.setProperty('--ov-order', String(i >= 0 ? i : 99));
+  }
+  if (currentRoute() === 'genel' && layout.includes('traffic-card')) loadTraffic();
 }
 
 // ---------- Grafikler ----------
@@ -357,6 +455,167 @@ const netSpark = new LineChart(document.querySelector('#kpi-net [data-spark]'), 
 const gpuChart = new LineChart($('gpu-chart'), { max: 100, format: pctAxis });
 const ioChart = new LineChart($('io-chart'), { format: fmtRate });
 const tempChart = new LineChart($('temp-chart'), { format: (v) => `${num0.format(v)} °C` });
+class BarChart {
+  constructor(canvas, { format = String, onSelect = null } = {}) {
+    Object.assign(this, { canvas, format, onSelect, data: null, hover: null, selected: null });
+    canvas.addEventListener('pointermove', (e) => this.pointer(e));
+    canvas.addEventListener('pointerleave', () => this.leave());
+    canvas.addEventListener('blur', () => this.leave());
+    canvas.addEventListener('click', (e) => {
+      const i = this.indexAt(e);
+      if (i != null) this.select(i);
+    });
+    canvas.addEventListener('keydown', (e) => {
+      if (!this.count()) return;
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        this.select(Math.max(0, Math.min(this.count() - 1, (this.selected ?? this.count() - 1) + (e.key === 'ArrowLeft' ? -1 : 1))));
+        this.hover = this.selected;
+        this.draw();
+        this.tip();
+      }
+    });
+  }
+
+  count() {
+    return this.data?.labels.length ?? 0;
+  }
+
+  set(data, selected = null) {
+    this.data = data;
+    this.selected = selected ?? (this.count() ? this.count() - 1 : null);
+    this.draw();
+  }
+
+  select(i) {
+    this.selected = i;
+    this.draw();
+    this.onSelect?.(i);
+  }
+
+  layout() {
+    const width = this.canvas.clientWidth;
+    const height = this.canvas.clientHeight;
+    const padTop = 16;
+    const padBottom = 18;
+    const n = Math.max(1, this.count());
+    const slot = width / n;
+    const sums = this.data ? this.data.labels.map((_, i) => Math.max(...this.data.series.map((s) => s.values[i] ?? 0))) : [0];
+    const top = niceMax(Math.max(0, ...sums));
+    const plot = height - padTop - padBottom;
+    return { width, height, padTop, padBottom, slot, top, plot, y: (v) => padTop + plot - (Math.min(v, top) / top) * plot };
+  }
+
+  indexAt(event) {
+    if (!this.count()) return null;
+    const g = this.layout();
+    const x = event.clientX - this.canvas.getBoundingClientRect().left;
+    return Math.max(0, Math.min(this.count() - 1, Math.floor(x / g.slot)));
+  }
+
+  pointer(event) {
+    const i = this.indexAt(event);
+    if (i == null) return;
+    this.hover = i;
+    this.draw();
+    this.tip(event.clientX, event.clientY);
+  }
+
+  leave() {
+    if (this.hover == null) return;
+    this.hover = null;
+    tooltip.hidden = true;
+    this.draw();
+  }
+
+  tip(clientX, clientY) {
+    const i = this.hover;
+    if (i == null) return;
+    const rect = this.canvas.getBoundingClientRect();
+    const g = this.layout();
+    const px = clientX ?? rect.left + (i + 0.5) * g.slot;
+    const py = clientY ?? rect.top + g.padTop + 10;
+    fill(
+      tooltip,
+      h('div', { class: 'tt-time' }, this.data.titles[i]),
+      this.data.series.map((s) => h('div', { class: 'tt-row' }, h('i', { class: `key ${s.key}` }), h('strong', null, this.format(s.values[i] ?? 0)), h('span', { class: 'tt-name' }, s.name))),
+    );
+    tooltip.hidden = false;
+    const tw = tooltip.offsetWidth;
+    const left = px + 14 + tw > window.innerWidth - 8 ? px - 14 - tw : px + 14;
+    tooltip.style.left = `${Math.max(8, left)}px`;
+    tooltip.style.top = `${Math.max(8, py - 12)}px`;
+  }
+
+  draw() {
+    const { canvas } = this;
+    if (!this.data) return;
+    const dpr = window.devicePixelRatio || 1;
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    if (!width || !height) return;
+    if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
+      canvas.width = Math.round(width * dpr);
+      canvas.height = Math.round(height * dpr);
+    }
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    const g = this.layout();
+    ctx.strokeStyle = cssVar('--grid');
+    ctx.lineWidth = 1;
+    ctx.fillStyle = cssVar('--axis');
+    ctx.font = `11px ${cssVar('--sans')}`;
+    ctx.textBaseline = 'bottom';
+    for (const f of [0, 0.5, 1]) {
+      const yy = Math.round(g.padTop + g.plot * f) + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(0, yy);
+      ctx.lineTo(width, yy);
+      ctx.stroke();
+      if (f < 1) ctx.fillText(this.format(g.top * (1 - f)), 2, yy - 2);
+    }
+    const n = this.count();
+    const groups = this.data.series.length;
+    const inner = Math.max(2, g.slot * 0.72);
+    const gap = 2;
+    const barW = Math.max(1, (inner - gap * (groups - 1)) / groups);
+    const base = g.padTop + g.plot;
+    const every = Math.max(1, Math.ceil(n / Math.max(1, Math.floor(width / 52))));
+    ctx.textBaseline = 'top';
+    ctx.textAlign = 'center';
+    for (let i = 0; i < n; i++) {
+      const x0 = i * g.slot + (g.slot - inner) / 2;
+      if (i === this.selected || i === this.hover) {
+        ctx.fillStyle = withAlpha(cssVar('--axis'), i === this.selected ? 0.16 : 0.08);
+        ctx.fillRect(i * g.slot, g.padTop, g.slot, g.plot);
+      }
+      this.data.series.forEach((s, k) => {
+        const v = s.values[i] ?? 0;
+        if (!(v > 0)) return;
+        const x = x0 + k * (barW + gap);
+        const y = Math.min(base - 1, g.y(v));
+        const r = Math.min(4, barW / 2, base - y);
+        ctx.fillStyle = cssVar(s.color);
+        ctx.beginPath();
+        ctx.moveTo(x, base);
+        ctx.lineTo(x, y + r);
+        ctx.quadraticCurveTo(x, y, x + r, y);
+        ctx.lineTo(x + barW - r, y);
+        ctx.quadraticCurveTo(x + barW, y, x + barW, y + r);
+        ctx.lineTo(x + barW, base);
+        ctx.closePath();
+        ctx.fill();
+      });
+      if ((n - 1 - i) % every === 0) {
+        ctx.fillStyle = cssVar('--axis');
+        ctx.fillText(this.data.labels[i], i * g.slot + g.slot / 2, base + 4);
+      }
+    }
+    ctx.textAlign = 'left';
+  }
+}
+
 const allCharts = [loadChart, netChart, netSpark, gpuChart, ioChart, tempChart];
 const redrawCharts = () => allCharts.forEach((c) => c.draw());
 
@@ -1511,31 +1770,120 @@ function buildGeneralCard() {
       else status.set('err', t('set.saveFailed'));
     },
   );
-  let stored = null;
-  try {
-    stored = localStorage.getItem(THEME_KEY);
-  } catch {
-    /* depolama kapalı */
-  }
+  return settingsCard('set.general', 'gear', null, h('div', { class: 'form-rows' }, formRow(t('set.language'), [lang.el, status.el], t('set.languageHint'))));
+}
+
+function swatchButtons(options, current, render, onPick) {
+  const buttons = options.map((id) => {
+    const b = h('button', { type: 'button', class: 'swatch', 'aria-pressed': String(id === current) }, render(id));
+    b.addEventListener('click', () => {
+      for (const x of buttons) x.setAttribute('aria-pressed', String(x === b));
+      onPick(id);
+    });
+    return b;
+  });
+  return h('div', { class: 'swatches', role: 'group' }, buttons);
+}
+
+function chipOf(colors) {
+  return h(
+    'span',
+    { class: 'swatch-chip', 'aria-hidden': 'true' },
+    colors.map((c) => {
+      const s = h('span');
+      s.style.background = c;
+      return s;
+    }),
+  );
+}
+
+function buildAppearanceCard() {
   const theme = segEl(
     [
       ['system', t('set.themeSystem')],
       ['light', t('set.themeLight')],
       ['dark', t('set.themeDark')],
     ],
-    stored ?? 'system',
+    readPref(THEME_KEY) ?? 'system',
     (v) => {
-      applyTheme(v === 'system' ? null : v);
-      try {
-        if (v === 'system') localStorage.removeItem(THEME_KEY);
-        else localStorage.setItem(THEME_KEY, v);
-      } catch {
-        /* tercih bu oturumla sınırlı kalır */
-      }
-      redrawCharts();
+      writePref(THEME_KEY, v === 'system' ? null : v);
+      applyAppearance();
     },
   );
-  return settingsCard('set.general', 'gear', null, h('div', { class: 'form-rows' }, formRow(t('set.language'), [lang.el, status.el], t('set.languageHint')), formRow(t('set.theme'), theme.el, t('set.themeHint'))));
+  const palettes = swatchButtons(
+    Object.keys(PALETTES),
+    readPref(PALETTE_KEY) ?? 'default',
+    (id) => [chipOf(PALETTES[id]), t(`look.palette.${id}`)],
+    (id) => {
+      writePref(PALETTE_KEY, id === 'default' ? null : id);
+      applyAppearance();
+    },
+  );
+  const accents = swatchButtons(
+    Object.keys(ACCENTS),
+    readPref(ACCENT_KEY) ?? 'blue',
+    (id) => {
+      const dot = h('span', { class: 'swatch-dot', 'aria-hidden': 'true' });
+      dot.style.background = ACCENTS[id];
+      return [dot, t(`look.accent.${id}`)];
+    },
+    (id) => {
+      writePref(ACCENT_KEY, id === 'blue' ? null : id);
+      applyAppearance();
+    },
+  );
+  const list = h('ul', { class: 'ov-list' });
+  const draw = () => {
+    const layout = overviewLayout();
+    const cards = layout.filter((id) => id !== 'kpis');
+    const order = ['kpis', ...cards, ...OVERVIEW_CARDS.filter((id) => id !== 'kpis' && !layout.includes(id))];
+    fill(
+      list,
+      order.map((id) => {
+        const on = layout.includes(id);
+        const box = h('input', { type: 'checkbox' });
+        box.checked = on;
+        box.addEventListener('change', () => {
+          saveOverview(box.checked ? [...layout, id] : layout.filter((x) => x !== id));
+          draw();
+        });
+        const move = (dir) => {
+          const i = cards.indexOf(id);
+          const j = i + dir;
+          if (i < 0 || j < 0 || j >= cards.length) return;
+          const next = [...cards];
+          [next[i], next[j]] = [next[j], next[i]];
+          saveOverview([...(layout.includes('kpis') ? ['kpis'] : []), ...next]);
+          draw();
+        };
+        const up = h('button', { type: 'button', class: 'icon-btn', 'aria-label': t('look.up'), title: t('look.up') }, '↑');
+        const down = h('button', { type: 'button', class: 'icon-btn', 'aria-label': t('look.down'), title: t('look.down') }, '↓');
+        up.disabled = !on || cards.indexOf(id) <= 0;
+        down.disabled = !on || cards.indexOf(id) === cards.length - 1;
+        up.addEventListener('click', () => move(-1));
+        down.addEventListener('click', () => move(1));
+        return h('li', { class: on ? '' : 'off' }, h('label', null, box, h('span', { class: 'ellipsis' }, overviewName(id))), id === 'kpis' ? null : h('span', { class: 'ov-move' }, up, down));
+      }),
+    );
+  };
+  draw();
+  const reset = button(t('look.reset'), null, () => {
+    saveOverview(null);
+    draw();
+  });
+  return settingsCard(
+    'look.title',
+    'sliders',
+    t('look.desc'),
+    h(
+      'div',
+      { class: 'form-rows' },
+      formRow(t('set.theme'), theme.el, t('set.themeHint')),
+      formRow(t('look.palette'), palettes),
+      formRow(t('look.accent'), accents),
+      formRow(t('look.overview'), [list, h('div', { class: 'form-actions' }, reset)], t('look.overviewHint')),
+    ),
+  );
 }
 
 function buildPanelCard() {
@@ -2083,6 +2431,7 @@ function buildAboutCard() {
 // Ayarlar bölümleri: [adres, başlık, simge, kartı kuran fonksiyon]
 const SETTINGS_SECTIONS = [
   ['genel', 'set.general', 'gear', buildGeneralCard],
+  ['gorunum', 'look.title', 'sliders', buildAppearanceCard],
   ['panel', 'set.panel', 'sliders', buildPanelCard],
   ['servisler', 'set.services', 'server', buildServicesCard],
   ['guncellemeler', 'set.updates', 'download', buildUpdatesCard],
@@ -3453,6 +3802,474 @@ function renderSpeed(d) {
         )
       : null,
   );
+}
+
+const traffic = { data: null, range: 'daily', iface: '*', selected: null, timer: null, built: false, chart: null, seg: null, select: null };
+const trafficHour = new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit' });
+const trafficHourLong = new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+const trafficDay = new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'short' });
+const trafficDayLong = new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'long', year: 'numeric', weekday: 'long' });
+const trafficMonth = new Intl.DateTimeFormat(locale, { month: 'short' });
+const trafficMonthLong = new Intl.DateTimeFormat(locale, { month: 'long', year: 'numeric' });
+
+function trafficLabels(item, range) {
+  if (range === 'hourly') {
+    const d = new Date(item.t);
+    return [trafficHour.format(d), `${trafficHourLong.format(d)} – ${trafficHour.format(new Date(item.t + 3_600_000))}`];
+  }
+  if (range === 'daily') {
+    const d = new Date(`${item.key}T12:00:00`);
+    return [trafficDay.format(d), trafficDayLong.format(d)];
+  }
+  const d = new Date(`${item.key}-15T12:00:00`);
+  return [trafficMonth.format(d), trafficMonthLong.format(d)];
+}
+
+function trafficPair(item, iface, physical) {
+  if (iface !== '*') return item.ifaces[iface] ?? [0, 0];
+  return Object.entries(item.ifaces).reduce((acc, [name, [rx, tx]]) => (physical.has(name) ? [acc[0] + rx, acc[1] + tx] : acc), [0, 0]);
+}
+
+function sumItems(items, iface, physical) {
+  return items.reduce((acc, it) => {
+    const [rx, tx] = trafficPair(it, iface, physical);
+    return [acc[0] + rx, acc[1] + tx];
+  }, [0, 0]);
+}
+
+function buildTraffic() {
+  if (traffic.built) return;
+  traffic.built = true;
+  const canvas = h('canvas', { class: 'chart', tabindex: '0', 'aria-label': t('traffic.chart') });
+  traffic.chart = new BarChart(canvas, { format: fmtBytes, onSelect: (i) => ((traffic.selected = i), renderTrafficDetail()) });
+  allCharts.push(traffic.chart);
+  traffic.seg = segEl(
+    [
+      ['hourly', t('traffic.hourly')],
+      ['daily', t('traffic.daily')],
+      ['monthly', t('traffic.monthly')],
+    ],
+    traffic.range,
+    (v) => {
+      traffic.range = v;
+      traffic.selected = null;
+      renderTraffic();
+    },
+  );
+  traffic.seg.el.setAttribute('aria-label', t('traffic.range'));
+  traffic.select = h('select', { class: 'select', 'aria-label': t('traffic.iface') });
+  traffic.select.addEventListener('change', () => {
+    traffic.iface = traffic.select.value;
+    renderTraffic();
+  });
+  fill(
+    $('traffic-body'),
+    h('div', { class: 'card-tools traffic-tools' }, traffic.seg.el, traffic.select, h('span', { class: 'legend' }, h('span', null, h('i', { class: 'key s1' }), t('traffic.rx')), h('span', null, h('i', { class: 'key s2' }), t('traffic.tx')))),
+    h('div', { class: 'traffic-tiles fact-tiles', id: 'traffic-tiles' }),
+    h('div', { class: 'chart-wrap' }, canvas),
+    h('div', { id: 'traffic-detail' }),
+  );
+}
+
+function renderTraffic() {
+  const d = traffic.data;
+  if (!d) return;
+  buildTraffic();
+  const physical = new Set(d.interfaces.filter((i) => i.physical).map((i) => i.name));
+  const names = d.interfaces.map((i) => i.name).sort((a, b) => Number(physical.has(b)) - Number(physical.has(a)) || a.localeCompare(b));
+  if (traffic.iface !== '*' && !names.includes(traffic.iface)) traffic.iface = '*';
+  fill(traffic.select, h('option', { value: '*' }, t('traffic.allPhysical')), names.map((n) => h('option', { value: n }, physical.has(n) ? n : `${n} · ${t('traffic.virtual')}`)));
+  traffic.select.value = traffic.iface;
+
+  const today = d.daily.at(-1);
+  const month = d.monthly.at(-1);
+  const tiles = [
+    [t('traffic.today'), sumItems([today], traffic.iface, physical)],
+    [t('traffic.thisMonth'), sumItems([month], traffic.iface, physical)],
+    [t('traffic.last30'), sumItems(d.daily, traffic.iface, physical)],
+    [t('traffic.last12'), sumItems(d.monthly, traffic.iface, physical)],
+  ];
+  fill($('traffic-tiles'), tiles.map(([label, [rx, tx]]) => h('div', null, h('b', null, fmtBytes(rx + tx)), h('span', null, label), h('small', { class: 'muted' }, `↓ ${fmtBytes(rx)} · ↑ ${fmtBytes(tx)}`))));
+
+  const items = d[traffic.range];
+  const pairs = items.map((it) => trafficPair(it, traffic.iface, physical));
+  const labels = items.map((it) => trafficLabels(it, traffic.range));
+  if (traffic.selected == null || traffic.selected >= items.length) traffic.selected = items.length - 1;
+  traffic.chart.set(
+    {
+      labels: labels.map((l) => l[0]),
+      titles: labels.map((l) => l[1]),
+      series: [
+        { name: t('traffic.rx'), key: 's1', color: '--series-1', values: pairs.map((p) => p[0]) },
+        { name: t('traffic.tx'), key: 's2', color: '--series-2', values: pairs.map((p) => p[1]) },
+      ],
+    },
+    traffic.selected,
+  );
+  $('traffic-meta').textContent = t('traffic.meta');
+  renderTrafficDetail();
+}
+
+function renderTrafficDetail() {
+  const d = traffic.data;
+  const item = d?.[traffic.range]?.[traffic.selected];
+  if (!item) return fill($('traffic-detail'));
+  const physical = new Set(d.interfaces.filter((i) => i.physical).map((i) => i.name));
+  const title = trafficLabels(item, traffic.range)[1];
+  const rows = (map, filterPhysical) =>
+    Object.entries(map)
+      .filter(([name]) => !filterPhysical || traffic.iface === '*' || name === traffic.iface)
+      .map(([name, [rx, tx]]) => ({ name, rx, tx, total: rx + tx }))
+      .sort((a, b) => b.total - a.total);
+  const ifaceRows = rows(item.ifaces, true);
+  const containerRows = rows(item.containers, false);
+  const tbl = (head, list, nameOf) =>
+    list.length
+      ? table(
+          [[head, ''], [t('traffic.rx'), 'num'], [t('traffic.tx'), 'num'], [t('traffic.total'), 'num']],
+          list.map((r) => h('tr', null, h('td', null, nameOf(r)), h('td', { class: 'num' }, fmtBytes(r.rx)), h('td', { class: 'num' }, fmtBytes(r.tx)), h('td', { class: 'num' }, fmtBytes(r.total)))),
+        )
+      : h('p', { class: 'muted small' }, t('traffic.none'));
+  fill(
+    $('traffic-detail'),
+    h('h3', { class: 'traffic-sub' }, title),
+    h('div', { class: 'traffic-split' },
+      h('div', null, h('h4', null, t('traffic.byIface')), tbl(t('traffic.iface'), ifaceRows, (r) => (physical.has(r.name) ? r.name : `${r.name} · ${t('traffic.virtual')}`))),
+      h('div', null, h('h4', null, t('traffic.byContainer')), tbl(t('traffic.container'), containerRows, (r) => r.name)),
+    ),
+  );
+}
+
+const trafficVisible = () => currentRoute() === 'ag' || (currentRoute() === 'genel' && overviewHas('traffic-card'));
+
+async function loadTraffic() {
+  clearTimeout(traffic.timer);
+  const res = await api(`/api/traffic?tz=${new Date().getTimezoneOffset()}`);
+  if (res.ok) {
+    traffic.data = res.data;
+    renderTraffic();
+  } else if (!traffic.data) fill($('traffic-body'), errorBox(t('traffic.failed')));
+  if (trafficVisible()) traffic.timer = setTimeout(loadTraffic, 60_000);
+}
+
+const filesState = { path: null, data: null, sort: 'name', desc: false, hidden: false, built: false, el: {}, uploads: [], error: null };
+const fileDate = new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' });
+const filePath = (dir, name) => (dir === '/' ? `/${name}` : `${dir}/${name}`);
+const parentOf = (p) => (p === '/' ? '/' : p.slice(0, p.lastIndexOf('/')) || '/');
+const filesHash = (p) => `#/dosyalar${p ? `/${encodeURIComponent(p)}` : ''}`;
+
+function filesErrorText(code) {
+  const key = `files.err.${code}`;
+  return I18N.DICT[I18N.lang][key] ? t(key) : t('files.err.failed');
+}
+
+function buildFiles() {
+  if (filesState.built) return;
+  filesState.built = true;
+  const el = filesState.el;
+  el.crumbs = h('nav', { class: 'files-crumbs', 'aria-label': t('files.path') });
+  el.meta = h('span', { class: 'card-meta' });
+  el.input = h('input', { type: 'text', class: 'input files-path', spellcheck: 'false', 'aria-label': t('files.path') });
+  el.input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') openPath(el.input.value.trim() || '/');
+  });
+  const tool = (name, label, fn) => {
+    const b = h('button', { type: 'button', class: 'btn files-btn', title: label }, icon(name), h('span', null, label));
+    b.addEventListener('click', fn);
+    return b;
+  };
+  el.picker = h('input', { type: 'file', multiple: true, hidden: true });
+  el.picker.addEventListener('change', () => {
+    uploadFiles([...el.picker.files]);
+    el.picker.value = '';
+  });
+  el.hidden = h('input', { type: 'checkbox' });
+  el.hidden.addEventListener('change', () => {
+    filesState.hidden = el.hidden.checked;
+    renderFiles();
+  });
+  el.up = tool('up', t('files.up'), () => filesState.data && openPath(parentOf(filesState.data.path)));
+  el.mkdir = tool('plus', t('files.mkdir'), () => startMkdir());
+  el.upload = tool('upload', t('files.upload'), () => el.picker.click());
+  el.body = h('div', { class: 'files-body' });
+  el.uploads = h('div', { class: 'files-uploads' });
+  el.drop = h('div', { class: 'files-drop', hidden: true }, icon('upload'), h('span', null, t('files.drop')));
+  const card = h(
+    'article',
+    { class: 'card files-card' },
+    h('div', { class: 'card-head' }, h('h2', { class: 'card-title' }, icon('folder'), h('span', null, t('nav.files'))), el.meta),
+    h(
+      'div',
+      { class: 'files-toolbar' },
+      tool('home', t('files.home'), () => openPath(filesState.data?.home ?? '')),
+      el.up,
+      tool('refresh', t('files.refresh'), () => loadFiles()),
+      el.mkdir,
+      el.upload,
+      h('label', { class: 'check files-hidden' }, el.hidden, h('span', null, t('files.showHidden'))),
+      el.picker,
+    ),
+    el.crumbs,
+    el.input,
+    el.uploads,
+    el.body,
+    el.drop,
+  );
+  let depth = 0;
+  card.addEventListener('dragenter', (e) => {
+    if (!e.dataTransfer?.types?.includes('Files')) return;
+    e.preventDefault();
+    depth++;
+    el.drop.hidden = false;
+  });
+  card.addEventListener('dragover', (e) => {
+    if (e.dataTransfer?.types?.includes('Files')) e.preventDefault();
+  });
+  card.addEventListener('dragleave', () => {
+    depth = Math.max(0, depth - 1);
+    if (!depth) el.drop.hidden = true;
+  });
+  card.addEventListener('drop', (e) => {
+    e.preventDefault();
+    depth = 0;
+    el.drop.hidden = true;
+    const files = [...(e.dataTransfer?.files ?? [])].filter((f) => f.size > 0 || f.type);
+    if (files.length) uploadFiles(files);
+  });
+  fill($('files-root'), card);
+}
+
+function openPath(p) {
+  window.location.hash = filesHash(p);
+}
+
+async function enterFiles() {
+  buildFiles();
+  const raw = window.location.hash.replace(/^#\/?dosyalar\/?/, '');
+  let wanted = '';
+  try {
+    wanted = raw ? decodeURIComponent(raw) : '';
+  } catch {
+    wanted = '';
+  }
+  filesState.path = wanted;
+  await loadFiles();
+}
+
+async function loadFiles() {
+  const res = await api(`/api/files?path=${encodeURIComponent(filesState.path ?? '')}`);
+  if (!res.ok) {
+    filesState.error = res.data?.code ?? 'failed';
+    filesState.data = null;
+  } else {
+    filesState.error = null;
+    filesState.data = res.data;
+  }
+  renderFiles();
+}
+
+function sortedEntries() {
+  const d = filesState.data;
+  const list = d.entries.filter((e) => filesState.hidden || !e.name.startsWith('.'));
+  const isDir = (e) => e.type === 'dir' || (e.type === 'link' && e.targetType === 'dir');
+  const key = { name: (e) => e.name.toLocaleLowerCase(locale), size: (e) => e.size ?? -1, mtime: (e) => e.mtime ?? 0 }[filesState.sort];
+  return list.sort((a, b) => {
+    if (isDir(a) !== isDir(b)) return isDir(a) ? -1 : 1;
+    const x = key(a);
+    const y = key(b);
+    const c = typeof x === 'string' ? x.localeCompare(y, locale, { numeric: true }) : x - y;
+    return filesState.desc ? -c : c;
+  });
+}
+
+function renderFiles() {
+  const el = filesState.el;
+  const d = filesState.data;
+  if (!d) {
+    fill(el.crumbs);
+    el.meta.textContent = '';
+    const msg = filesState.error === 'files_unavailable' ? t('files.unavailable') : filesErrorText(filesState.error);
+    const link = filesState.error === 'files_unavailable' ? h('a', { href: '#/terminal' }, t('nav.terminal')) : filesState.path ? h('a', { href: filesHash('') }, t('files.goHome')) : null;
+    return fill(el.body, errorBox(msg), link ? h('p', null, link) : null);
+  }
+  el.input.value = d.path;
+  el.up.disabled = d.path === '/';
+  el.mkdir.disabled = !d.writable;
+  el.upload.disabled = !d.writable;
+  const parts = d.path.split('/').filter(Boolean);
+  fill(
+    el.crumbs,
+    h('a', { href: filesHash('/') }, '/'),
+    parts.map((p, i) => [h('span', { class: 'sep' }, '›'), h('a', { href: filesHash(`/${parts.slice(0, i + 1).join('/')}`) }, p)]),
+  );
+  const entries = sortedEntries();
+  const hiddenCount = d.entries.length - entries.length;
+  el.meta.textContent = [t('files.as', { user: d.user ?? '?' }), t('files.count', { n: num0.format(entries.length) }), hiddenCount ? t('files.hiddenCount', { n: hiddenCount }) : null, d.writable ? null : t('files.readOnly')].filter(Boolean).join(' · ');
+  const head = (key, label, cls) => {
+    const b = h('button', { type: 'button', class: 'files-sort' }, label, filesState.sort === key ? (filesState.desc ? ' ↓' : ' ↑') : '');
+    b.addEventListener('click', () => {
+      filesState.desc = filesState.sort === key ? !filesState.desc : key !== 'name';
+      filesState.sort = key;
+      renderFiles();
+    });
+    return h('th', { class: cls, scope: 'col' }, b);
+  };
+  const rows = entries.map((e) => fileRow(d, e));
+  fill(
+    el.body,
+    d.truncated ? h('p', { class: 'muted small' }, t('files.truncated')) : null,
+    entries.length
+      ? h('div', { class: 'table-wrap' }, h('table', { class: 'files-table' }, h('thead', null, h('tr', null, head('name', t('files.name'), ''), head('size', t('files.size'), 'num'), head('mtime', t('files.modified'), 'files-col-date'), h('th', { class: 'files-col-mode', scope: 'col' }, t('files.mode')), h('th', { class: 'num', scope: 'col' }, h('span', { class: 'visually-hidden' }, t('files.actions'))))), h('tbody', { id: 'files-tbody' }, rows)))
+      : placeholder(t('files.empty')),
+  );
+}
+
+function fileRow(d, e) {
+  const full = filePath(d.path, e.name);
+  const dir = e.type === 'dir' || (e.type === 'link' && e.targetType === 'dir');
+  const fileLike = e.type === 'file' || (e.type === 'link' && e.targetType === 'file');
+  const nameEl = dir ? h('a', { href: filesHash(full), class: 'files-name' }, e.name) : fileLike ? h('a', { href: `/api/files/download?path=${encodeURIComponent(full)}`, class: 'files-name', download: e.name }, e.name) : h('span', { class: 'files-name' }, e.name);
+  const kindIcon = icon(e.type === 'link' ? 'link' : dir ? 'folder' : 'file');
+  kindIcon.classList.add(dir ? 'files-ic-dir' : 'files-ic-file');
+  const nameCell = h('td', { class: 'files-name-cell' }, kindIcon, nameEl, e.type === 'link' && e.target ? h('span', { class: 'muted small files-target' }, `→ ${e.target}`) : null);
+  const act = (name, label, fn) => {
+    const b = h('button', { type: 'button', class: 'icon-btn', title: label, 'aria-label': `${label}: ${e.name}` }, icon(name));
+    b.addEventListener('click', fn);
+    return b;
+  };
+  const actions = h(
+    'td',
+    { class: 'num files-actions' },
+    fileLike ? h('a', { class: 'icon-btn', href: `/api/files/download?path=${encodeURIComponent(full)}`, download: e.name, title: t('files.download'), 'aria-label': `${t('files.download')}: ${e.name}` }, icon('download')) : null,
+    d.writable ? act('pencil', t('files.rename'), () => startRename(nameCell, d, e)) : null,
+    d.writable ? act('trash', t('files.delete'), () => deleteEntry(d, e, dir)) : null,
+  );
+  return h('tr', null, nameCell, h('td', { class: 'num' }, e.size == null || dir ? '—' : fmtBytes(e.size)), h('td', { class: 'files-col-date' }, e.mtime ? fileDate.format(new Date(e.mtime)) : '—'), h('td', { class: 'files-col-mode mono' }, e.mode ?? '—'), actions);
+}
+
+function inlineName(value, onSubmit) {
+  const input = h('input', { type: 'text', class: 'input files-inline', value, spellcheck: 'false' });
+  const status = h('span', { class: 'save-status' });
+  let busy = false;
+  input.addEventListener('keydown', async (ev) => {
+    if (ev.key === 'Escape') return renderFiles();
+    if (ev.key !== 'Enter' || busy) return;
+    const name = input.value.trim();
+    if (!name || name.includes('/') || name === '.' || name === '..') return (status.className = 'save-status err'), (status.textContent = t('files.err.invalid'));
+    busy = true;
+    const err = await onSubmit(name);
+    busy = false;
+    if (err) {
+      status.className = 'save-status err';
+      status.textContent = filesErrorText(err);
+    }
+  });
+  setTimeout(() => {
+    input.focus();
+    const dot = value.lastIndexOf('.');
+    input.setSelectionRange(0, dot > 0 ? dot : value.length);
+  });
+  return [input, status];
+}
+
+function startRename(cell, d, e) {
+  fill(cell, ...inlineName(e.name, async (name) => {
+    if (name === e.name) return renderFiles();
+    const res = await api('/api/files/op', { op: 'rename', from: filePath(d.path, e.name), to: filePath(d.path, name) });
+    if (!res.ok) return res.data?.code ?? 'failed';
+    await loadFiles();
+    return null;
+  }));
+}
+
+function startMkdir() {
+  const d = filesState.data;
+  if (!d) return;
+  const tbody = $('files-tbody');
+  const cell = h('td', { class: 'files-name-cell', colspan: '5' });
+  fill(cell, icon('folder'), ...inlineName(t('files.newFolder'), async (name) => {
+    const res = await api('/api/files/op', { op: 'mkdir', path: filePath(d.path, name) });
+    if (!res.ok) return res.data?.code ?? 'failed';
+    await loadFiles();
+    return null;
+  }));
+  const row = h('tr', { class: 'files-new' }, cell);
+  if (tbody) tbody.prepend(row);
+  else fill(filesState.el.body, h('div', { class: 'table-wrap' }, h('table', { class: 'files-table' }, h('tbody', { id: 'files-tbody' }, row))));
+}
+
+async function deleteEntry(d, e, dir) {
+  const full = filePath(d.path, e.name);
+  const ok = await confirmDialog(t(dir ? 'files.deleteDirTitle' : 'files.deleteTitle', { name: e.name }), t(dir ? 'files.deleteDirText' : 'files.deleteText', { path: full }), t('files.delete'));
+  if (!ok) return;
+  const res = await api('/api/files/op', { op: 'delete', path: full, recursive: dir && e.type === 'dir' });
+  if (!res.ok) {
+    filesState.el.meta.textContent = filesErrorText(res.data?.code);
+    return;
+  }
+  await loadFiles();
+}
+
+const uploadId = () => [...crypto.getRandomValues(new Uint8Array(12))].map((b) => b.toString(16).padStart(2, '0')).join('');
+const UPLOAD_CHUNK = 4 * 1024 * 1024;
+
+async function uploadFiles(files) {
+  const d = filesState.data;
+  if (!d?.writable) return;
+  for (const file of files) {
+    const job = { file, dir: d.path, sent: 0, cancel: false, error: null, done: false, id: uploadId() };
+    const bar = h('span');
+    const label = h('span', { class: 'files-up-state' });
+    const stop = h('button', { type: 'button', class: 'icon-btn', title: t('files.cancel'), 'aria-label': `${t('files.cancel')}: ${file.name}` }, '×');
+    stop.addEventListener('click', () => (job.cancel = true));
+    job.row = h('div', { class: 'files-up' }, icon('upload'), h('span', { class: 'ellipsis files-up-name' }, file.name), h('span', { class: 'mini files-up-bar' }, bar), label, stop);
+    job.update = () => {
+      const pct = file.size ? (job.sent / file.size) * 100 : 100;
+      bar.style.width = `${Math.min(100, pct)}%`;
+      label.textContent = job.error ? filesErrorText(job.error) : job.done ? t('files.uploaded') : `${fmtBytes(job.sent)} / ${fmtBytes(file.size)}`;
+      job.row.classList.toggle('err', Boolean(job.error));
+    };
+    job.update();
+    filesState.el.uploads.append(job.row);
+    await runUpload(job, false);
+  }
+  if (filesState.data?.path === d.path) loadFiles();
+}
+
+async function runUpload(job, overwrite) {
+  const target = filePath(job.dir, job.file.name);
+  let offset = 0;
+  try {
+    do {
+      if (job.cancel) throw Object.assign(new Error('cancelled'), { code: 'cancelled' });
+      const end = Math.min(job.file.size, offset + UPLOAD_CHUNK);
+      const blob = job.file.slice(offset, end);
+      const qs = new URLSearchParams({ path: target, upload: job.id, offset: String(offset), final: end >= job.file.size ? '1' : '0', overwrite: overwrite ? '1' : '0' });
+      const res = await fetch(`/api/files/upload?${qs}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: blob });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (data.code === 'exists' && offset === 0 && !overwrite) {
+          if (await confirmDialog(t('files.existsTitle', { name: job.file.name }), t('files.existsText'), t('files.overwrite'))) {
+            job.id = uploadId();
+            return runUpload(job, true);
+          }
+          throw Object.assign(new Error('skipped'), { code: 'skipped' });
+        }
+        throw Object.assign(new Error(data.code ?? 'failed'), { code: data.code ?? 'failed' });
+      }
+      offset = end;
+      job.sent = offset;
+      job.update();
+    } while (offset < job.file.size);
+    job.done = true;
+    job.update();
+    setTimeout(() => job.row.remove(), 4000);
+  } catch (err) {
+    job.error = err.code ?? 'failed';
+    job.update();
+    if (offset > 0) api('/api/files/op', { op: 'abort', path: target, upload: job.id });
+    setTimeout(() => job.row.remove(), 10_000);
+  }
 }
 
 async function loadSpeed() {
@@ -4878,6 +5695,7 @@ const ROUTES = {
   gunlukler: t('nav.logs'),
   guvenlik: t('nav.security'),
   yedekler: t('nav.backups'),
+  dosyalar: t('nav.files'),
   ayarlar: t('nav.settings'),
 };
 let hostName = null;
@@ -4921,6 +5739,8 @@ function applyRoute() {
   else clearTimeout(ollamaTimer);
   if (route === 'ag') loadSpeed();
   else clearTimeout(speed.timer);
+  if (trafficVisible()) loadTraffic();
+  else clearTimeout(traffic.timer);
   if (route === 'gecmis') enterHistory();
   else leaveHistory();
   if (route === 'yapay-zeka') enterAi();
@@ -4931,6 +5751,7 @@ function applyRoute() {
   if (route === 'gunlukler') enterLogs();
   else leaveLogs();
   if (route === 'guvenlik') enterSecurity();
+  if (route === 'dosyalar') enterFiles();
   if (route === 'yedekler') enterBackups();
   else leaveBackups();
   if (route === 'izleme') enterUptime();
@@ -4986,31 +5807,13 @@ $('logout').addEventListener('click', async () => {
 
 // ---------- Tema ----------
 
-const THEME_KEY = 'serverhealth-theme';
-const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
-
-function applyTheme(theme) {
-  if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
-  else delete document.documentElement.dataset.theme;
-}
-
-try {
-  applyTheme(localStorage.getItem(THEME_KEY));
-} catch {
-  /* depolama kapalıysa sistem teması kullanılır */
-}
-
 $('theme-toggle').addEventListener('click', () => {
-  const current = document.documentElement.dataset.theme ?? (darkQuery.matches ? 'dark' : 'light');
-  const next = current === 'dark' ? 'light' : 'dark';
-  applyTheme(next);
-  try {
-    localStorage.setItem(THEME_KEY, next);
-  } catch {
-    /* tercih bu oturumla sınırlı kalır */
-  }
-  redrawCharts();
+  const next = document.documentElement.dataset.mode === 'dark' ? 'light' : 'dark';
+  writePref(THEME_KEY, next);
+  applyAppearance();
 });
-darkQuery.addEventListener('change', redrawCharts);
+darkQuery.addEventListener('change', () => applyAppearance());
+applyAppearance();
+applyOverview();
 
 poll();

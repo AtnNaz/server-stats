@@ -197,6 +197,9 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
   const EXEC_SOCKET = 'serverhealth-exec.socket';
   const termDropIn = () => path.join(files.units, 'serverhealth-term@.service.d', 'user.conf');
   const execDropIn = () => path.join(files.units, 'serverhealth-exec@.service.d', 'user.conf');
+  const FILES_SOCKET = 'serverhealth-files.socket';
+  const filesDropIn = () => path.join(files.units, 'serverhealth-files@.service.d', 'user.conf');
+  const filesUnit = () => access(path.join(files.units, FILES_SOCKET)).then(() => true, () => false);
 
   // Terminal için seçilebilecek kullanıcılar: gerçek giriş kabuğu olan normal hesaplar (root değil).
   async function terminalUsers() {
@@ -211,21 +214,25 @@ export function createHelper({ root = '', dryRun = false, queue, nodeBin = proce
   async function setTerminal(user) {
     await writeAtomic(termDropIn(), `[Service]\nUser=${user}\n`);
     await writeAtomic(execDropIn(), `[Service]\nUser=${user}\n`);
+    const withFiles = await filesUnit();
+    if (withFiles) await writeAtomic(filesDropIn(), `[Service]\nUser=${user}\n`);
     await run(platform.systemctl, ['daemon-reload']);
-    await run(platform.systemctl, ['enable', '--now', TERM_SOCKET, EXEC_SOCKET]);
+    await run(platform.systemctl, ['enable', '--now', TERM_SOCKET, EXEC_SOCKET, ...(withFiles ? [FILES_SOCKET] : [])]);
   }
   async function removeTerminal() {
-    await run(platform.systemctl, ['disable', '--now', TERM_SOCKET, EXEC_SOCKET]);
-    await run(platform.systemctl, ['stop', 'serverhealth-term@*.service', 'serverhealth-exec@*.service']);
+    await run(platform.systemctl, ['disable', '--now', TERM_SOCKET, EXEC_SOCKET, ...((await filesUnit()) ? [FILES_SOCKET] : [])]);
+    await run(platform.systemctl, ['stop', 'serverhealth-term@*.service', 'serverhealth-exec@*.service', 'serverhealth-files@*.service']);
     await unlink(termDropIn()).catch(() => {});
     await unlink(execDropIn()).catch(() => {});
+    await unlink(filesDropIn()).catch(() => {});
     await run(platform.systemctl, ['daemon-reload']);
   }
   // Terminal bu özellikten önceki bir sürümde açıldıysa komut soketi de aynı kullanıcıyla açılır.
   async function reconcileTerminal() {
     const tm = (await loadState()).terminal;
     if (!tm.enabled || !platform.terminal || !platform.terminalUsers.includes(tm.user)) return;
-    if (await access(execDropIn()).then(() => true, () => false)) return;
+    const has = (p) => access(p).then(() => true, () => false);
+    if ((await has(execDropIn())) && (!(await filesUnit()) || (await has(filesDropIn())))) return;
     await setTerminal(tm.user);
   }
 

@@ -27,6 +27,9 @@ import { createSpeedtest } from './speedtest.js';
 import { createUptime } from './uptime.js';
 import { createDiskHealth, HEALTH_RANGES } from './disk-health.js';
 import { markAcknowledged } from './disk-ack.js';
+import { createTraffic } from './traffic.js';
+import { filesCall, filesRead, contentDisposition, FILE_STATUS } from './files-client.js';
+import { validateFilesRequest, CHUNK_SIZE } from './files-protocol.js';
 import { createImageUpdates, validateDockerRequest } from './docker-protocol.js';
 import { upgrade } from './websocket.js';
 import { createTerminals, terminalAvailable } from './terminal.js';
@@ -130,6 +133,19 @@ function readBody(req, limit = MAX_BODY) {
   });
 }
 
+function readRawBody(req, limit) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size <= limit) chunks.push(chunk);
+    });
+    req.on('end', () => (size > limit ? reject(Object.assign(new Error('too_large'), { status: 413 })) : resolve(Buffer.concat(chunks))));
+    req.on('error', reject);
+  });
+}
+
 // Başka bir sitenin, kullanıcının tarayıcısı üzerinden giriş/çıkış isteği göndermesini engeller.
 function sameOrigin(req) {
   const origin = req.headers.origin;
@@ -214,9 +230,12 @@ function main() {
   const refreshDiskAlerts = () => diskHealth.alerts().then((a) => (diskAlerts = a), () => {});
   setInterval(refreshDiskAlerts, 10 * 60_000).unref();
   refreshDiskAlerts();
+  const traffic = createTraffic({ dir: path.join(stateDir, 'traffic'), bootId: () => readFile('/proc/sys/kernel/random/boot_id', 'utf8').then((s) => s.trim(), () => null) });
+  traffic.start();
   const samplerHooks = {
     onSample: (snapshot) => {
       history.add(snapshot);
+      traffic.record(snapshot.network?.interfaces).catch((err) => console.warn(`Trafik kaydedilemedi: ${err.message}`));
       diskHealth.record(snapshot).catch((err) => console.warn(`Disk sağlığı kaydedilemedi: ${err.message}`));
     },
   };
@@ -427,6 +446,13 @@ function main() {
   // --- Konteynerler: root Docker yardımcısı üzerinden; imaj güncellemelerini panel kendisi denetler ---
   const imageUpdates = createImageUpdates();
   const dockerQuery = (request, timeoutMs = 30_000) => runQuery({ socketPath: config.docker.helperSocket, request, timeoutMs });
+  async function pollContainerTraffic() {
+    if (!(await queryAvailable(config.docker.helperSocket))) return;
+    const r = await dockerQuery({ op: 'traffic' }, 60_000);
+    if (Array.isArray(r?.containers)) await traffic.recordContainers(r.containers);
+  }
+  setInterval(() => pollContainerTraffic().catch(() => {}), 60_000).unref();
+  pollContainerTraffic().catch(() => {});
   async function dockerOverview(res, req, { forceUpdates = false } = {}) {
     if (!(await queryAvailable(config.docker.helperSocket))) return sendJson(req, res, 409, { code: 'docker_unavailable' });
     try {
@@ -635,6 +661,74 @@ function main() {
     await rename(tmp, path.join(queueDir, name));
   }
 
+  const filesSocket = () => config.terminal.filesSocket;
+  const filesError = (req, res, err) => sendJson(req, res, FILE_STATUS[err.code] ?? 400, { code: err.code ?? 'failed' });
+
+  async function handleFilesList(req, res) {
+    if (!(await terminalAvailable(filesSocket()))) return sendJson(req, res, 409, { code: 'files_unavailable' });
+    const q = validateFilesRequest({ op: 'list', path: new URL(req.url, 'http://localhost').searchParams.get('path') ?? '' });
+    if (!q) return sendJson(req, res, 400, { code: 'invalid' });
+    try {
+      return sendJson(req, res, 200, await filesCall({ socketPath: filesSocket(), request: q }));
+    } catch (err) {
+      return filesError(req, res, err);
+    }
+  }
+
+  async function handleFilesDownload(req, res) {
+    if (!(await terminalAvailable(filesSocket()))) return sendJson(req, res, 409, { code: 'files_unavailable' });
+    const q = validateFilesRequest({ op: 'read', path: new URL(req.url, 'http://localhost').searchParams.get('path') });
+    if (!q) return sendJson(req, res, 400, { code: 'invalid' });
+    let r;
+    try {
+      r = await filesRead({ socketPath: filesSocket(), path: q.path });
+    } catch (err) {
+      return filesError(req, res, err);
+    }
+    res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'application/octet-stream', 'Content-Length': r.info.size, 'Content-Disposition': contentDisposition(r.info.name), 'Cache-Control': 'no-store' });
+    if (req.method === 'HEAD') {
+      r.socket.destroy();
+      return res.end();
+    }
+    res.on('close', () => r.socket.destroy());
+    if (r.rest.length) res.write(r.rest);
+    r.socket.pipe(res);
+    r.socket.resume();
+  }
+
+  async function handleFilesUpload(req, res) {
+    if (!sameOrigin(req)) return sendJson(req, res, 403, { code: 'origin' });
+    if (String(req.headers['content-type']) !== 'application/octet-stream') return sendJson(req, res, 415, { code: 'content_type' });
+    if (!(await terminalAvailable(filesSocket()))) return sendJson(req, res, 409, { code: 'files_unavailable' });
+    const p = new URL(req.url, 'http://localhost').searchParams;
+    let body;
+    try {
+      body = await readRawBody(req, CHUNK_SIZE);
+    } catch (err) {
+      return sendJson(req, res, err.status ?? 400, { code: 'bad_request' });
+    }
+    const q = validateFilesRequest({ op: 'write', path: p.get('path'), upload: p.get('upload'), offset: Number(p.get('offset')), size: body.length, final: p.get('final') === '1', overwrite: p.get('overwrite') === '1' });
+    if (!q) return sendJson(req, res, 400, { code: 'invalid' });
+    try {
+      return sendJson(req, res, 200, await filesCall({ socketPath: filesSocket(), request: q, body, timeoutMs: 60_000 }));
+    } catch (err) {
+      return filesError(req, res, err);
+    }
+  }
+
+  async function handleFilesOp(req, res) {
+    const body = await readJsonBody(req, res);
+    if (!body) return;
+    if (!(await terminalAvailable(filesSocket()))) return sendJson(req, res, 409, { code: 'files_unavailable' });
+    const q = validateFilesRequest(body);
+    if (!q || !['mkdir', 'delete', 'rename', 'abort'].includes(q.op)) return sendJson(req, res, 400, { code: 'invalid' });
+    try {
+      return sendJson(req, res, 200, await filesCall({ socketPath: filesSocket(), request: q, timeoutMs: q.op === 'delete' ? 120_000 : 30_000 }));
+    } catch (err) {
+      return filesError(req, res, err);
+    }
+  }
+
   async function readJsonBody(req, res, limit = MAX_BODY) {
     if (!sameOrigin(req)) {
       sendJson(req, res, 403, { code: 'origin' });
@@ -739,6 +833,8 @@ function main() {
       if (pathname === '/api/speedtest') return handleSpeedtest(req, res);
       if (pathname === '/api/chats/delete') return handleChatDelete(req, res);
       if (pathname === '/api/disk-usage') return handleDiskUsage(req, res);
+      if (pathname === '/api/files/upload') return handleFilesUpload(req, res);
+      if (pathname === '/api/files/op') return handleFilesOp(req, res);
       if (pathname === '/api/uptime/save') return handleUptimeSave(req, res);
       if (pathname === '/api/docker/action') return handleDockerAction(req, res);
       if (pathname === '/api/docker/check-updates') {
@@ -814,6 +910,12 @@ function main() {
     if (pathname === '/api/ollama') return sendJson(req, res, 200, await ollama.info());
     if (pathname === '/api/chats') return sendJson(req, res, 200, { chats: await chats.list() });
     if (pathname === '/api/speedtest') return sendJson(req, res, 200, { ...(await speedtest.status()), scheduleHours: effective.speedtestHours });
+    if (pathname === '/api/files') return handleFilesList(req, res);
+    if (pathname === '/api/files/download') return handleFilesDownload(req, res);
+    if (pathname === '/api/traffic') {
+      const tz = Number(new URL(req.url, 'http://localhost').searchParams.get('tz'));
+      return sendJson(req, res, 200, await traffic.query({ offsetMinutes: Number.isInteger(tz) && Math.abs(tz) <= 840 ? tz : 0 }));
+    }
     const chatMatch = /^\/api\/chats\/([0-9a-f-]{36})$/.exec(pathname);
     if (chatMatch) {
       const chat = await chats.get(chatMatch[1]);
@@ -991,6 +1093,7 @@ function main() {
   updates.start();
 
   const shutdown = () => {
+    traffic.stop();
     sampler.stop();
     updates.stop();
     terminals.closeAll();

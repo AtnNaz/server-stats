@@ -6,6 +6,7 @@ Geliştirici: [Ali Toprak Naz](https://github.com/AtnNaz) · Lisans: [PolyForm N
 
 - **Sistem:** hostname, işletim sistemi, çekirdek, açık kalma süresi, CPU (toplam ve çekirdek başına), yük ortalaması, RAM/swap, disk doluluğu
 - **Ağ:** arayüzler ve IP adresleri, anlık gelen/giden trafik, dinlenen TCP/UDP portlar
+- **Trafik geçmişi:** Ağ sayfasında son 24 saatin saatlik, son 30 günün günlük ve son 12 ayın aylık indirme/yükleme toplamları; her dönem için ağ kartı ve Docker konteyneri başına döküm. Toplamlar arayüz sayaçlarından hesaplanır ve 13 ay saklanır; panel yeniden başlasa da aynı açılış içindeki trafik kaybolmaz
 - **Süreçler:** CPU'ya veya belleğe göre en çok kaynak kullanan süreçler
 - **Servisler:** seçtiğiniz systemd servislerinin durumu
 - **Diskler:** her fiziksel diskin okuma/yazma hızı, meşguliyeti ve **SMART sağlık durumu** (bozuk sektörler, aşınma, sıcaklık, çalışma süresi); sorunlu diskler Genel bakış'ta uyarı olarak çıkar
@@ -24,6 +25,8 @@ Geliştirici: [Ali Toprak Naz](https://github.com/AtnNaz) · Lisans: [PolyForm N
 - **Güncelleme önizlemesi:** Ayarlar → Güncellemeler'de bekleyen paketlerin listesi (güvenlik güncellemeleri işaretli) ve yerel modelle kısa bir özet
 - **Geçmiş:** işlemci, bellek, sıcaklık, ağ, disk ve ekran kartı değerleri dakikalık olarak 30 gün saklanır; son 24 saat, 7 gün ve 30 günlük grafikler
 - **Terminal:** sunucunun komut satırı tarayıcıda (htop, nano, sudo çalışır); seçtiğiniz kullanıcıyla açılır, varsayılan kapalıdır (bkz. [Terminal](#terminal))
+- **Dosyalar:** sunucudaki klasörlerde gezinme, dosya indirme, sürükle-bırak ile yükleme (büyük dosyalar parça parça gider), yeni klasör, yeniden adlandırma ve silme; terminalle aynı kullanıcının yetkisiyle çalışır (bkz. [Dosya gezgini](#dosya-gezgini))
+- **Görünüm:** Ayarlar → Görünüm'de açık/koyu tema, altı renk paleti (Varsayılan, Gece mavisi, OLED siyah, Kum, Orman, Yüksek kontrast), vurgu rengi ve Genel bakış'ta hangi kartların hangi sırayla görüneceği seçilir; tercihler o cihazın tarayıcısında saklanır
 - **Yapay zekâ:** sunucudaki [Ollama](https://ollama.com) ile sohbet, model indirme/silme ve hız testi; hiçbir şey dışarı gönderilmez. Sohbetler sunucuda saklanır (`/var/lib/serverhealth-panel/chats`), böylece başka bir cihazdan da devam edilir; ekran kartı belleğine sığan modeller önerilir. Model sunucunun anlık durumunu (diskler, SMART, sıcaklık, ekran kartı, servisler, güncellemeler, son rapor) her zaman görür. "Komut çalıştırma" açıksa sorunları araştırmak için kendisi komut da çalıştırabilir (bkz. [Yapay zekâ komutları](#yapay-zekâ-komutları))
 
 Panel sol menüden bölümlere ayrılır (Genel bakış, Geçmiş, Ekran kartı, Depolama, Ağ, İzleme, Süreçler, Servisler, Konteynerler, Günlükler, Güvenlik, Yedekler, Terminal, Yapay zekâ, Raporlar); menüdeki rozetler sorunlu bölümleri işaret eder. Birkaç saniyede bir kendini günceller; canlı grafikler son 10 dakikayı, Geçmiş sayfası son 30 günü gösterir. Giriş ekranından oturum açılır; aynı veriler `/api/stats` adresinden JSON olarak da alınabilir (bkz. [API](#api)).
@@ -129,6 +132,7 @@ Ayarlar `/etc/serverhealth/config.json` dosyasındadır. Değişiklikten sonra `
 | `history.retentionDays` | `30` | Geçmiş sayfası için dakikalık ölçümlerin kaç gün saklanacağı (1–365); dosyalar `/var/lib/serverhealth-panel/history` altındadır, günde yaklaşık 0,5 MB |
 | `terminal.idleMinutes` | `15` | Terminal bu kadar dakika tuşa basılmazsa kapanır |
 | `terminal.socket` | `"/run/serverhealth-term.sock"` | Terminal soketi (kurulum betiğiyle aynı kalmalı) |
+| `terminal.filesSocket` | `"/run/serverhealth-files.sock"` | Dosya gezgini soketi (kurulum betiğiyle aynı kalmalı) |
 | `updateCheck` | `true` | İki günde bir GitHub'daki son sürüme bakar; yeni sürüm varsa Ayarlar → Hakkında'da gösterir |
 | `allowedHosts` | `[]` | Panelin kabul ettiği ek adlar (ör. `["durum.ornek.com"]`). Sunucunun kendi IP adresleri, makine adı ve `localhost` her zaman kabul edilir; başka adlarla gelen istekler (DNS rebinding) reddedilir. `["*"]` denetimi kapatır |
 | `auth.username` | `"admin"` | Panel kullanıcı adı |
@@ -191,6 +195,15 @@ Sol menüdeki **Terminal** sayfasından açılır: bir kullanıcı seçip "Termi
 - Terminalde yazdıklarınız (sudo şifresi dahil) ağda panelle aynı yoldan gider. Düz HTTP üzerinde kullanmayın; HTTPS, SSH tüneli ya da Tailscale gibi şifreli bir bağlantı kullanın. Panel şifrelenmemiş bağlantıda uyarı gösterir.
 - Terminal ekranı xterm.js çalışırken stil etiketi eklediği için yalnızca `/terminal` sayfasının güvenlik politikası satır içi stillere izin verir; betikler yine yalnızca panelin kendi dosyalarından yüklenir.
 - Gereksinim: `python3` (Ubuntu ve Debian'da hazır gelir).
+
+## Dosya gezgini
+
+Sol menüdeki **Dosyalar** sayfası, terminal açıkken kullanılabilir ve terminal için seçilen Linux kullanıcısının yetkisiyle çalışır: o kullanıcının okuyamadığı dosyalar görünmez, yazamadığı klasörlere yükleme yapılamaz. Root olarak çalışmaz.
+
+- Panel servisi dosyalara kendisi dokunmaz. systemd, `/run/serverhealth-files.sock` soketine gelen her istek için seçilen kullanıcıyla kısa ömürlü bir `serverhealth-files@` servisi başlatır; sokete yalnızca panel servisinin grubu bağlanabilir. Köprü root olarak çalıştırılırsa hiçbir isteği yerine getirmez.
+- Yüklemeler 4 MiB'lık parçalar hâlinde gider ve önce aynı klasördeki gizli bir `.ad.<kimlik>.part` dosyasına yazılır; son parça gelince asıl adına taşınır. Yarıda kalan yükleme bu geçici dosyayı siler. Aynı adda dosya varsa üzerine yazmadan önce sorulur; üzerine yazılan dosyanın izinleri korunur.
+- Silme kalıcıdır (çöp kutusu yoktur) ve her seferinde onay ister. Klasörler içindekilerle birlikte silinir. Silme ve yeniden adlandırma `journalctl -u 'serverhealth-files@*'` günlüğüne yazılır.
+- Yükleme ve değişiklik istekleri yalnızca tarayıcı oturumuyla ve panelin kendi sayfasından kabul edilir.
 
 ## Disk alanı, günlükler ve güvenlik
 

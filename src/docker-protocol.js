@@ -7,6 +7,7 @@ const ID = /^[0-9a-f]{12,64}$/;
 export function validateDockerRequest(q) {
   if (!q || typeof q !== 'object' || Array.isArray(q)) return null;
   if (q.op === 'overview') return { op: 'overview' };
+  if (q.op === 'traffic') return { op: 'traffic' };
   if (q.op === 'action' && DOCKER_ACTIONS.includes(q.action) && typeof q.id === 'string' && ID.test(q.id)) return { op: 'action', action: q.action, id: q.id };
   return null;
 }

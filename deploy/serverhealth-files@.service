@@ -1,0 +1,24 @@
+[Unit]
+Description=Node Stats - dosya gezgini işlemi
+CollectMode=inactive-or-failed
+
+[Service]
+ExecStart=@NODE@ /opt/serverhealth/bin/serverhealth-files.js
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+RuntimeMaxSec=3600
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any

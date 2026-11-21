@@ -180,9 +180,11 @@ rmdir /var/lib/serverhealth-panel/queue 2>/dev/null || true # eski sürümlerin 
 # Panel terminali: soket yalnızca panelin grubuna açıktır; panelden açılana kadar etkin değildir.
 # Kabuğun hangi kullanıcıyla açılacağını root yardımcısı serverhealth-term@.service.d/user.conf ile yazar.
 # Yapay zekâ komutları da aynı kullanıcıyla, ayrı bir soket üzerinden çalışır.
-for unit in serverhealth-term.socket serverhealth-exec.socket; do
+for unit in serverhealth-term.socket serverhealth-exec.socket serverhealth-files.socket; do
   install -m 0644 "$APP_DIR/deploy/$unit" "/etc/systemd/system/$unit"
 done
+sed "s|@NODE@|$NODE_BIN|g" "$APP_DIR/deploy/serverhealth-files@.service" > /etc/systemd/system/serverhealth-files@.service
+chmod 0644 /etc/systemd/system/serverhealth-files@.service
 if PYTHON_BIN="$(command -v python3)"; then
   for unit in serverhealth-term@.service serverhealth-exec@.service; do
     sed "s|/usr/bin/python3|$PYTHON_BIN|g" "$APP_DIR/deploy/$unit" > "/etc/systemd/system/$unit"

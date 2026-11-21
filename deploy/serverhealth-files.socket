@@ -1,0 +1,14 @@
+[Unit]
+Description=Node Stats - dosya gezgini soketi
+
+[Socket]
+ListenStream=/run/serverhealth-files.sock
+SocketUser=root
+SocketGroup=serverhealth
+SocketMode=0660
+Accept=yes
+MaxConnections=16
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

@@ -32,7 +32,7 @@ const DEFAULTS = {
   // Uzun süreli ölçüm geçmişi panelin durum klasöründe dakikalık tutulur.
   history: { retentionDays: 30 },
   // Panel terminali: root yardımcısının açtığı systemd soketine bağlanır; boşta kalan oturum kapanır.
-  terminal: { socket: '/run/serverhealth-term.sock', execSocket: '/run/serverhealth-exec.sock', idleMinutes: 15, commandTimeoutSeconds: 30, approvedTimeoutSeconds: 300 },
+  terminal: { socket: '/run/serverhealth-term.sock', execSocket: '/run/serverhealth-exec.sock', filesSocket: '/run/serverhealth-files.sock', idleMinutes: 15, commandTimeoutSeconds: 30, approvedTimeoutSeconds: 300 },
   // Disk alanı analizi, günlükler ve güvenlik sayfası: root'a ait, yalnızca okuyan sorgu yardımcısının soketi.
   query: { socket: '/run/serverhealth-query.sock' },
   // GitHub yedeği servisinin yazdığı durum dosyaları (panel yalnızca okur).
@@ -81,6 +81,7 @@ function validate(cfg) {
   if (typeof cfg.terminal.socket !== 'string' || !path.isAbsolute(cfg.terminal.socket)) errors.push('terminal.socket mutlak bir yol olmalı');
   if (!isInt(cfg.terminal.idleMinutes, 1, 1440)) errors.push('terminal.idleMinutes 1-1440 arasında olmalı');
   if (typeof cfg.terminal.execSocket !== 'string' || !path.isAbsolute(cfg.terminal.execSocket)) errors.push('terminal.execSocket mutlak bir yol olmalı');
+  if (typeof cfg.terminal.filesSocket !== 'string' || !path.isAbsolute(cfg.terminal.filesSocket)) errors.push('terminal.filesSocket mutlak bir yol olmalı');
   if (!isInt(cfg.terminal.commandTimeoutSeconds, 1, 120)) errors.push('terminal.commandTimeoutSeconds 1-120 arasında olmalı');
   if (!isInt(cfg.terminal.approvedTimeoutSeconds, 1, 600)) errors.push('terminal.approvedTimeoutSeconds 1-600 arasında olmalı');
   if (typeof cfg.backup.dir !== 'string' || !path.isAbsolute(cfg.backup.dir)) errors.push('backup.dir mutlak bir yol olmalı');

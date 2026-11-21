@@ -4,10 +4,16 @@ const $ = (id) => document.getElementById(id);
 const { t } = window.I18N;
 
 try {
+  const root = document.documentElement;
   const theme = localStorage.getItem('serverhealth-theme');
-  if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+  const palette = localStorage.getItem('serverhealth-palette');
+  const accent = localStorage.getItem('serverhealth-accent');
+  if (theme === 'light' || theme === 'dark') root.dataset.theme = theme;
+  root.dataset.mode = theme === 'light' || theme === 'dark' ? theme : window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  if (/^[a-z]{1,12}$/.test(palette ?? '')) root.dataset.palette = palette;
+  if (/^[a-z]{1,12}$/.test(accent ?? '')) root.dataset.accent = accent;
 } catch {
-  /* depolama kapalıysa sistem teması kullanılır */
+  document.documentElement.dataset.mode = 'light';
 }
 
 const form = $('login-form');
