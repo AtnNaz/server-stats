@@ -1,4 +1,6 @@
 // Bekleyen paket güncellemelerini yerel modele özetletir. Paket listesi modele veri olarak verilir.
+import { promptFor } from './languages.js';
+
 const PROMPTS = {
   tr: [
     'Sen deneyimli bir Linux sistem yöneticisisin. Aşağıda bir sunucuda bekleyen paket güncellemelerinin listesi var.',
@@ -27,7 +29,7 @@ export function updateSummaryMessages(packages, language = 'tr') {
     .slice(0, 300)
     .map((p) => `${clean(p.name, 80)} ${clean(p.from ?? 'yeni', 60)} -> ${clean(p.to, 60)}${p.security ? ' [security]' : ''}`);
   return [
-    { role: 'system', content: (PROMPTS[language] ?? PROMPTS.tr).join('\n') },
+    { role: 'system', content: promptFor(PROMPTS, language).join('\n') },
     { role: 'user', content: `${packages.length} paket:\n${lines.join('\n')}` },
   ];
 }

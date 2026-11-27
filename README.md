@@ -27,6 +27,7 @@ Geliştirici: [Ali Toprak Naz](https://github.com/AtnNaz) · Lisans: [PolyForm N
 - **Terminal:** sunucunun komut satırı tarayıcıda (htop, nano, sudo çalışır); seçtiğiniz kullanıcıyla açılır, varsayılan kapalıdır (bkz. [Terminal](#terminal))
 - **Dosyalar:** sunucudaki klasörlerde gezinme, dosya indirme, sürükle-bırak ile yükleme (büyük dosyalar parça parça gider), yeni klasör, yeniden adlandırma ve silme; terminalle aynı kullanıcının yetkisiyle çalışır (bkz. [Dosya gezgini](#dosya-gezgini))
 - **Görünüm:** Ayarlar → Görünüm'de açık/koyu tema, altı renk paleti (Varsayılan, Gece mavisi, OLED siyah, Kum, Orman, Yüksek kontrast), vurgu rengi ve Genel bakış'ta hangi kartların hangi sırayla görüneceği seçilir; tercihler o cihazın tarayıcısında saklanır
+- **Diller:** Türkçe, English, Deutsch, Español, Français ve Русский; Ayarlar → Genel'den seçilir. Sunucunun ürettiği iletiler (SMART gerekçeleri, sensör adları) da seçilen dilde gelir, günlük rapor ve güncelleme özeti de yapay zekâya bu dilde yazdırılır
 - **Yapay zekâ:** sunucudaki [Ollama](https://ollama.com) ile sohbet, model indirme/silme ve hız testi; hiçbir şey dışarı gönderilmez. Sohbetler sunucuda saklanır (`/var/lib/serverhealth-panel/chats`), böylece başka bir cihazdan da devam edilir; ekran kartı belleğine sığan modeller önerilir. Model sunucunun anlık durumunu (diskler, SMART, sıcaklık, ekran kartı, servisler, güncellemeler, son rapor) her zaman görür. "Komut çalıştırma" açıksa sorunları araştırmak için kendisi komut da çalıştırabilir (bkz. [Yapay zekâ komutları](#yapay-zekâ-komutları))
 
 Panel sol menüden bölümlere ayrılır (Genel bakış, Geçmiş, Ekran kartı, Depolama, Ağ, İzleme, Süreçler, Servisler, Konteynerler, Günlükler, Güvenlik, Yedekler, Terminal, Yapay zekâ, Raporlar); menüdeki rozetler sorunlu bölümleri işaret eder. Birkaç saniyede bir kendini günceller; canlı grafikler son 10 dakikayı, Geçmiş sayfası son 30 günü gösterir. Giriş ekranından oturum açılır; aynı veriler `/api/stats` adresinden JSON olarak da alınabilir (bkz. [API](#api)).
@@ -77,12 +78,17 @@ Panel kurulduğu makineyi kendisi tanır; sunucuya özgü bir ayar gerektirmez:
    Betik şunları yapar:
    - `serverhealth` adında yetkisiz bir sistem kullanıcısı oluşturur
    - uygulamayı `/opt/serverhealth` altına kopyalar
-   - `/etc/serverhealth/config.json` dosyasını oluşturur, panel için kullanıcı adı ve şifre sorar
+   - `/etc/serverhealth/config.json` dosyasını oluşturur
    - systemd servisini kurar, açılışta başlayacak şekilde etkinleştirir ve başlatır
+   - sonunda tek kullanımlık bir **ilk kurulum adresi** yazar (`http://SUNUCU_IP:8080/setup?code=…`)
 
    Docker konteynerlerini de görmek istiyorsanız `--docker` ekleyin (aşağıdaki güvenlik notunu okuyun).
 
-3. Tarayıcıda `http://SUNUCU_IP:8080/` adresini açın ve kurulumda belirlediğiniz kullanıcı adı ve şifreyle oturum açın. Güvenlik duvarı kullanıyorsanız portu açın, ör. `sudo ufw allow 8080/tcp`.
+3. Betiğin yazdığı ilk kurulum adresini tarayıcıda açın. Sihirbaz dört adımda dili ve temayı, yönetici hesabını (kullanıcı adı ve şifre) ve izlenecek systemd servislerini sorar; bitince oturumunuz açılır. Güvenlik duvarı kullanıyorsanız portu açın, ör. `sudo ufw allow 8080/tcp`.
+
+   - Kod kaybolursa sunucuda okunabilir: `sudo cat /var/lib/serverhealth-panel/setup-token`. Panel de kurulum beklerken adresi `journalctl -u serverhealth` günlüğüne yazar.
+   - Kurulum tamamlanana kadar panelin hiçbir sayfası ve API'si açılmaz; kodu bilmeyen biri hesap oluşturamaz. Kod kurulum bitince silinir ve 20 hatalı denemeden sonra kurulum 10 dakika kilitlenir.
+   - Sihirbaz yerine terminalde kurmak isterseniz: `sudo PANEL_USER=admin ~/server-stats/deploy/install.sh` kullanıcı adını alır ve şifreyi terminalde sorar.
 
 > **Önemli:** Düz HTTP üzerinde giriş şifresi ve oturum çerezi ağda okunabilir. Giriş ekranı bu durumu "Bağlantı şifrelenmemiş" diye gösterir. Panel internete açıksa aşağıdaki [HTTPS](#https) seçeneklerinden birini mutlaka kullanın.
 

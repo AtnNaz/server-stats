@@ -125,7 +125,7 @@ const TEXT = {
 };
 
 export function buildServerContext({ snapshot: s, system, report, language = 'tr', now = Date.now(), commands = null }) {
-  const L = TEXT[language] ?? TEXT.tr;
+  const L = TEXT[language] ?? (language === 'tr' ? TEXT.tr : TEXT.en);
   const out = [...L.intro, ...(commands?.user ? L.commands(commands.user, commands.timeoutSeconds) : [L.noCommands]), ''];
   const section = (title, lines) => {
     const list = lines.filter(Boolean);

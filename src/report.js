@@ -1,6 +1,8 @@
 // Günlük rapor: son 24 saatin günlük kayıtlarından kodla kesin rakamlar çıkarılır, yerel bir
 // Ollama modeli yalnızca bu özeti yorumlar. Kayıtlar sunucudan dışarı çıkmaz.
 
+import { promptFor } from './languages.js';
+
 const MAX_GROUPS = 30;
 const MAX_SAMPLE = 200;
 const MAX_LIST = 10;
@@ -257,7 +259,7 @@ const PROMPTS = {
 
 export function buildMessages(facts, language = 'tr') {
   return [
-    { role: 'system', content: (PROMPTS[language] ?? PROMPTS.tr).join('\n') },
+    { role: 'system', content: promptFor(PROMPTS, language).join('\n') },
     { role: 'user', content: JSON.stringify(facts) },
   ];
 }

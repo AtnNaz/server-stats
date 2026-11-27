@@ -108,8 +108,9 @@ chmod -R u=rwX,go=rX "$APP_DIR"
 install -d -m 0750 -o root -g "$SVC_USER" "$CONF_DIR"
 if [[ ! -f $CONF_FILE ]]; then
   install -m 0640 -o root -g "$SVC_USER" "$APP_DIR/config.example.json" "$CONF_FILE"
-  read -rp "Panel kullanıcı adı [admin]: " PANEL_USER
-  "$NODE_BIN" "$APP_DIR/bin/hash-password.js" --set "$CONF_FILE" --user "${PANEL_USER:-admin}"
+  if [[ -n ${PANEL_USER:-} ]]; then
+    "$NODE_BIN" "$APP_DIR/bin/hash-password.js" --set "$CONF_FILE" --user "$PANEL_USER"
+  fi
   mapfile -t SERVICES < <(detect_services)
   "$NODE_BIN" -e '
     const fs = require("fs");
@@ -257,6 +258,13 @@ if systemctl is-active --quiet serverhealth.service; then
   echo
   IP=$(ip -4 -o route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "src") print $(i + 1)}')
   echo "Panel çalışıyor: http://${IP:-SUNUCU_IP}:$PORT/"
+  TOKEN_FILE=/var/lib/serverhealth-panel/setup-token
+  for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -s $TOKEN_FILE ]] && break; sleep 1; done
+  if [[ -s $TOKEN_FILE ]]; then
+    echo
+    echo "İlk kurulum: yönetici hesabını oluşturmak için bu adresi tarayıcıda açın (kod tek kullanımlıktır):"
+    echo "  http://${IP:-SUNUCU_IP}:$PORT/setup?code=$(tr -d '[:space:]' < "$TOKEN_FILE")"
+  fi
   echo "Ayarlar: $CONF_FILE  ·  Günlük: journalctl -u serverhealth -f"
 else
   echo "Servis başlamadı. Ayrıntılar:" >&2

@@ -9,8 +9,9 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig, resolveConfigPath } from './config.js';
-import { createAuth, hashPassword } from './auth.js';
-import { createSettingsStore, effectiveConfig, publicSettings, validatePanelSettings } from './settings.js';
+import { createAuth, hashPassword, parseHash } from './auth.js';
+import { createSettingsStore, effectiveConfig, publicSettings, validatePanelSettings, LANGUAGES } from './settings.js';
+import { createSetupGate, pickLanguage, validateSetup } from './setup.js';
 import { validateRequest, MODEL_NAME } from './system-settings.js';
 import { setLanguage } from './i18n.js';
 import { createSessions, authKeyOf } from './sessions.js';
@@ -65,6 +66,8 @@ const ASSETS = [
   { route: '/login', file: 'login.html', type: 'text/html; charset=utf-8', public: true },
   { route: '/login.js', file: 'login.js', type: 'text/javascript; charset=utf-8', public: true },
   { route: '/i18n.js', file: 'i18n.js', type: 'text/javascript; charset=utf-8', public: true },
+  { route: '/setup', file: 'setup.html', type: 'text/html; charset=utf-8', setup: true },
+  { route: '/setup.js', file: 'setup.js', type: 'text/javascript; charset=utf-8', setup: true },
   { route: '/style.css', file: 'style.css', type: 'text/css; charset=utf-8', public: true },
   { route: '/favicon.svg', file: 'favicon.svg', type: 'image/svg+xml', public: true },
   { route: '/manifest.webmanifest', file: 'manifest.webmanifest', type: 'application/manifest+json; charset=utf-8', public: true },
@@ -103,7 +106,22 @@ const ASSET_HEADERS = {
 const isLoopback = (addr) => addr === '::1' || addr.startsWith('127.') || addr.startsWith('::ffff:127.');
 
 function loadAssets() {
-  return new Map(ASSETS.map((a) => [a.route, { ...a, body: readFileSync(path.join(PUBLIC_DIR, a.file)) }]));
+  const map = new Map(ASSETS.map((a) => [a.route, { ...a, body: readFileSync(path.join(PUBLIC_DIR, a.file)) }]));
+  const core = map.get('/i18n.js');
+  const dict = (lang) => {
+    try {
+      return readFileSync(path.join(PUBLIC_DIR, 'i18n', `${lang}.js`));
+    } catch {
+      return null;
+    }
+  };
+  const en = dict('en') ?? Buffer.alloc(0);
+  core.bundles = Object.fromEntries(
+    LANGUAGES.map((lang) => [lang, dict(lang)])
+      .filter(([, body]) => body)
+      .map(([lang, body]) => [lang, Buffer.concat(lang === 'en' ? [en, Buffer.from('\n'), core.body] : [en, Buffer.from('\n'), body, Buffer.from('\n'), core.body])]),
+  );
+  return map;
 }
 
 function send(req, res, status, type, body, headers = {}) {
@@ -194,7 +212,7 @@ function listServiceUnits() {
   });
 }
 
-function main() {
+async function main() {
   const configPath = resolveConfigPath();
   let config;
   try {
@@ -220,7 +238,16 @@ function main() {
   let effective = effectiveConfig(config, settingsStore.get());
   setLanguage(effective.language);
 
-  let auth = createAuth(effective.auth);
+  let setupMode = !parseHash(effective.auth.passwordHash);
+  let auth = setupMode ? null : createAuth(effective.auth);
+  const setupGate = createSetupGate({ dir: stateDir });
+  if (setupMode) {
+    await mkdir(stateDir, { recursive: true }).catch(() => {});
+    const token = await setupGate.open();
+    console.log(`İlk kurulum bekleniyor. Bu adresi tarayıcıda açın: ${setupUrl(token)}`);
+  } else {
+    setupGate.close().catch(() => {});
+  }
   // Oturumlar durum klasöründe saklanır: "beni hatırla" panel yeniden başlayınca da geçerli kalır.
   const sessions = createSessions({ file: path.join(stateDir, 'sessions.json'), authKey: authKeyOf(effective.auth.username, effective.auth.passwordHash) });
   const history = createHistoryStore({ dir: path.join(stateDir, 'history'), retentionDays: config.history.retentionDays });
@@ -807,6 +834,7 @@ function main() {
       return send(req, res, 403, TEXT, `Bilinmeyen adres: ${requestHostname(req) ?? '?'}. Bu adla erişmek için config.json içindeki allowedHosts listesine ekleyin.\n`);
     }
     if (isSecure(req)) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+    if (setupMode) return handleSetupMode(req, res, pathname);
 
     if (req.method === 'POST') {
       if (pathname === '/login') return handleLogin(req, res);
@@ -853,6 +881,7 @@ function main() {
     const session = sessions.get(req.headers.cookie);
     const asset = assets.get(pathname);
     if (pathname === '/login' && session) return redirect(req, res, '/');
+    if (asset?.setup) return redirect(req, res, '/');
     if (asset?.public) return sendAsset(req, res, asset);
 
     let user = session?.user;
@@ -967,9 +996,64 @@ function main() {
     return send(req, res, 404, TEXT, 'Not found\n');
   }
 
-  function sendAsset(req, res, asset) {
-    const body = asset.type.startsWith('text/html') ? Buffer.from(asset.body.toString('utf8').replace('<html lang="tr">', `<html lang="${effective.language}">`)) : asset.body;
+  function sendAsset(req, res, asset, lang = effective.language) {
+    const use = asset.bundles ? (asset.bundles[lang] ? lang : effective.language) : LANGUAGES.includes(lang) ? lang : effective.language;
+    const html = () => asset.body.toString('utf8').replace('<html lang="tr">', `<html lang="${use}">`).replace('<script src="/i18n.js"', `<script src="/i18n.js?lang=${use}"`);
+    const body = asset.bundles ? (asset.bundles[use] ?? asset.bundles.en ?? asset.body) : asset.type.startsWith('text/html') ? Buffer.from(html()) : asset.body;
     return send(req, res, 200, asset.type, body, ASSET_HEADERS[asset.headers]);
+  }
+
+  function setupUrl(token) {
+    const ip = Object.values(os.networkInterfaces())
+      .flat()
+      .find((a) => a && a.family === 'IPv4' && !a.internal)?.address;
+    const host = isLoopback(config.host) ? '127.0.0.1' : config.host === '0.0.0.0' || config.host === '::' ? (ip ?? 'SUNUCU_IP') : config.host;
+    return `${config.tls.cert ? 'https' : 'http'}://${host}:${config.port}/setup?code=${token}`;
+  }
+
+  async function finishSetup(req, res) {
+    const body = await readJsonBody(req, res);
+    if (!body) return;
+    const gate = setupGate.check(body.code);
+    if (gate.locked) return sendJson(req, res, 429, { code: 'locked', retryAfter: gate.retryAfter });
+    if (!gate.ok) return sendJson(req, res, 403, { code: 'bad_code' });
+    const { errors, value } = validateSetup(body, { languages: LANGUAGES });
+    if (errors.length) return sendJson(req, res, 400, { code: 'invalid', fields: errors });
+    const previous = effective;
+    await settingsStore.update({ language: value.language, services: value.services });
+    await settingsStore.setAccount(value.username, await hashPassword(value.password), config.auth.passwordHash);
+    await applySettings(previous);
+    auth = createAuth(effective.auth);
+    setupMode = false;
+    await setupGate.close();
+    sessions.destroyOthers('', authKeyOf(effective.auth.username, effective.auth.passwordHash));
+    console.log(`İlk kurulum tamamlandı; yönetici: ${effective.auth.username}`);
+    const cookie = sessions.create(effective.auth.username, { remember: true, secure: isSecure(req) });
+    return sendJson(req, res, 200, { ok: true }, { 'Set-Cookie': cookie });
+  }
+
+  async function handleSetupMode(req, res, pathname) {
+    const query = new URL(req.url, 'http://localhost').searchParams;
+    const asked = query.get('lang');
+    const lang = LANGUAGES.includes(asked) ? asked : pickLanguage(req.headers['accept-language'], LANGUAGES, effective.language);
+    if (req.method === 'POST') {
+      if (pathname === '/api/setup') return finishSetup(req, res);
+      return sendJson(req, res, 503, { code: 'setup_required' });
+    }
+    if (req.method !== 'GET' && req.method !== 'HEAD') return send(req, res, 405, TEXT, 'Method not allowed\n', { Allow: 'GET, HEAD, POST' });
+    if (pathname === '/healthz') return send(req, res, 200, TEXT, 'ok\n');
+    if (pathname === '/api/setup') {
+      const gate = setupGate.check(query.get('code'));
+      if (gate.locked) return sendJson(req, res, 429, { code: 'locked', retryAfter: gate.retryAfter });
+      if (!gate.ok) return sendJson(req, res, 403, { code: 'bad_code' });
+      const units = await listServiceUnits().catch(() => []);
+      return sendJson(req, res, 200, { hostname: os.hostname(), languages: LANGUAGES, language: lang, services: effective.services, units, secure: isSecure(req) });
+    }
+    const asset = assets.get(pathname);
+    if (asset && pathname !== '/login' && (asset.public || asset.setup)) return sendAsset(req, res, asset, lang);
+    if (pathname.startsWith('/api/')) return sendJson(req, res, 503, { code: 'setup_required' });
+    const code = query.get('code');
+    return redirect(req, res, `/setup${code ? `?code=${encodeURIComponent(code)}` : ''}`);
   }
 
   async function handleSettings(req, res) {
@@ -1108,4 +1192,7 @@ function main() {
   process.once('SIGTERM', shutdown);
 }
 
-main();
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

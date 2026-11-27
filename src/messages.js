@@ -1,4 +1,9 @@
 // Sunucu tarafı metinleri. Her anahtar iki dilde de bulunmalıdır (test/i18n.test.js denetler).
+import de from './messages/de.js';
+import es from './messages/es.js';
+import fr from './messages/fr.js';
+import ru from './messages/ru.js';
+
 export const MESSAGES = {
   tr: {
     'smart.failed': 'Disk kendi SMART testinde başarısız',
@@ -116,4 +121,8 @@ export const MESSAGES = {
     'err.dockerParse': 'Could not parse the Docker response',
     'err.dockerTimeout': 'Docker did not respond',
   },
+  de,
+  es,
+  fr,
+  ru,
 };

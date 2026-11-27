@@ -10,29 +10,47 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (f) => readFileSync(path.join(ROOT, f), 'utf8');
 const vars = (s) => [...s.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort();
 
+const LANGS = ['tr', 'en', 'de', 'es', 'fr', 'ru'];
+
 function loadBrowserDict() {
   const win = {};
   const doc = { documentElement: { lang: 'tr' }, querySelectorAll: () => [] };
+  for (const lang of LANGS) new Function('window', read(`public/i18n/${lang}.js`))(win);
   new Function('window', 'document', read('public/i18n.js'))(win, doc);
   return win.I18N.DICT;
 }
 
 function assertSameKeysAndVars(dict, label) {
-  assert.deepEqual(Object.keys(dict.en).sort(), Object.keys(dict.tr).sort(), `${label}: iki dilin anahtarları aynı olmalı`);
-  for (const key of Object.keys(dict.tr)) {
-    assert.deepEqual(vars(dict.en[key]), vars(dict.tr[key]), `${label}: "${key}" iki dilde aynı değişkenleri kullanmalı`);
+  for (const lang of LANGS) {
+    assert.ok(dict[lang], `${label}: ${lang} sözlüğü yok`);
+    assert.deepEqual(Object.keys(dict[lang]).sort(), Object.keys(dict.tr).sort(), `${label}: ${lang} anahtarları Türkçeyle aynı olmalı`);
+    for (const key of Object.keys(dict.tr)) {
+      assert.ok(String(dict[lang][key]).length, `${label}: ${lang} "${key}" boş`);
+      assert.deepEqual(vars(dict[lang][key]), vars(dict.tr[key]), `${label}: ${lang} "${key}" aynı değişkenleri kullanmalı`);
+    }
   }
 }
 
-test('arayüz sözlüğü: iki dil aynı anahtar ve değişkenlere sahip', () => {
-  assertSameKeysAndVars(loadBrowserDict(), 'arayüz');
+test('arayüz sözlüğü: bütün diller aynı anahtar ve değişkenlere sahip', () => {
+  const dict = loadBrowserDict();
+  assertSameKeysAndVars(dict, 'arayüz');
+  assert.deepEqual(Object.keys(languageNames()), LANGS);
 });
+
+function languageNames() {
+  const win = {};
+  new Function('window', 'document', read('public/i18n.js'))(win, { documentElement: { lang: 'en' }, querySelectorAll: () => [] });
+  return win.I18N.NAMES;
+}
 
 test('arayüzde kullanılan her anahtar sözlükte var', () => {
   const dict = loadBrowserDict().tr;
   const used = new Set();
-  for (const f of ['public/app.js', 'public/login.js']) for (const m of read(f).matchAll(/\bt\(\s*'([\w.]+)'/g)) used.add(m[1]);
-  for (const f of ['public/index.html', 'public/login.html']) for (const m of read(f).matchAll(/data-i18n(?:-[a-z-]+)?="([^"]+)"/g)) used.add(m[1]);
+  for (const f of ['public/app.js', 'public/login.js', 'public/setup.js']) for (const m of read(f).matchAll(/\bt\(\s*'([\w.]+)'/g)) used.add(m[1]);
+  for (const f of ['public/index.html', 'public/login.html', 'public/setup.html']) for (const m of read(f).matchAll(/data-i18n(?:-[a-z-]+)?="([^"]+)"/g)) used.add(m[1]);
+  for (const s of ['code', 'language', 'account', 'services', 'review']) used.add(`setup.h.${s}`).add(`setup.sub.${s}`);
+  for (const s of ['language', 'account', 'services', 'review']) used.add(`setup.step.${s}`);
+  for (let i = 0; i <= 4; i++) used.add(`setup.strength.${i}`);
   // settingsCard('set.x', ...) gibi dolaylı kullanımlar ve dinamik anahtarlar
   for (const m of read('public/app.js').matchAll(/settingsCard\(\s*'([\w.]+)'/g)) used.add(m[1]);
   for (const d of ['daily', ...WEEKDAYS]) used.add(`day.${d}`);

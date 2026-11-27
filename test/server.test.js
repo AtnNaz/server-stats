@@ -10,13 +10,13 @@ import { hashPassword } from '../src/auth.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-async function startServer(t) {
+async function startServer(t, { auth = null } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'serverhealth-'));
   const port = 20000 + Math.floor(Math.random() * 20000);
   const file = path.join(dir, 'config.json');
   writeFileSync(
     file,
-    JSON.stringify({ host: '127.0.0.1', port, updateCheck: false, auth: { username: 'admin', passwordHash: await hashPassword('dogru-sifre') }, system: { statusFile: path.join(dir, 'system.json') }, query: { socket: path.join(dir, 'query.sock') } }),
+    JSON.stringify({ host: '127.0.0.1', port, updateCheck: false, auth: auth ?? { username: 'admin', passwordHash: await hashPassword('dogru-sifre') }, system: { statusFile: path.join(dir, 'system.json') }, query: { socket: path.join(dir, 'query.sock') } }),
   );
   const env = { ...process.env, STATE_DIRECTORY: path.join(dir, 'state') };
   const child = spawn(process.execPath, ['src/server.js', '--config', file], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -30,7 +30,7 @@ async function startServer(t) {
     rmSync(dir, { recursive: true, force: true });
   });
   await new Promise((resolve, reject) => {
-    child.stdout.on('data', (chunk) => String(chunk).includes('çalışıyor') && resolve());
+    child.stdout.on('data', (chunk) => String(chunk).includes('adresinde çalışıyor') && resolve());
     child.on('exit', (code) => reject(new Error(`sunucu kapandı (${code})`)));
   });
   return { base: `http://127.0.0.1:${port}`, dir };
@@ -266,4 +266,45 @@ test('disk alanı, günlükler ve güvenlik: oturum, doğrulama ve yardımcı yo
   }
   const status = await (await get('/api/disk-usage?path=/')).json();
   assert.deepEqual([status.available, status.running, status.result], [false, null, null]);
+});
+
+test('ilk kurulum: tek kullanımlık kodla yönetici hesabı oluşturulur', async (t) => {
+  const { base, dir } = await startServer(t, { auth: { username: '', passwordHash: '' } });
+  const token = readFileSync(path.join(dir, 'state', 'setup-token'), 'utf8').trim();
+  assert.match(token, /^[a-f0-9]{32}$/);
+
+  const root = await fetch(`${base}/`, { redirect: 'manual' });
+  assert.equal(root.status, 302);
+  assert.equal(root.headers.get('location'), '/setup');
+  assert.equal((await fetch(`${base}/login`, { redirect: 'manual' })).headers.get('location'), '/setup');
+  assert.equal((await fetch(`${base}/api/stats`)).status, 503);
+
+  const page = await fetch(`${base}/setup?lang=en`);
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /<html lang="en">/);
+  assert.match(await (await fetch(`${base}/i18n.js?lang=tr`)).text(), /I18N_DICT \?\?= \{\}\)\.tr/);
+
+  assert.equal((await fetch(`${base}/api/setup?code=${'0'.repeat(32)}`)).status, 403);
+  const info = await fetch(`${base}/api/setup?code=${token}`);
+  assert.equal(info.status, 200);
+  assert.ok((await info.json()).languages.includes('de'));
+
+  const post = (body, headers = { Origin: base }) => fetch(`${base}/api/setup`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
+  const good = { code: token, language: 'en', username: 'yonetici', password: 'uzun-bir-sifre', services: ['ssh'] };
+  assert.equal((await post(good, {})).status, 403);
+  assert.equal((await post({ ...good, code: 'f'.repeat(32) })).status, 403);
+  assert.equal((await post({ ...good, password: 'kisa' })).status, 400);
+  const done = await post(good);
+  assert.equal(done.status, 200);
+  const cookie = done.headers.get('set-cookie').split(';')[0];
+
+  const stats = await fetch(`${base}/api/settings`, { headers: { Cookie: cookie } });
+  assert.equal(stats.status, 200);
+  const settings = await stats.json();
+  assert.equal(settings.panel.language, 'en');
+  assert.deepEqual(settings.panel.services, ['ssh']);
+  assert.equal(readdirSync(path.join(dir, 'state')).includes('setup-token'), false);
+  assert.equal((await fetch(`${base}/setup`, { headers: { Cookie: cookie }, redirect: 'manual' })).headers.get('location'), '/');
+  assert.equal((await post(good)).status, 401);
+  assert.equal((await login(base, { username: 'yonetici', password: 'uzun-bir-sifre' })).status, 200);
 });

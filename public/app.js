@@ -1757,19 +1757,15 @@ function resolvePending(sys) {
 
 function buildGeneralCard() {
   const status = saveStatus();
-  const lang = segEl(
-    [
-      ['tr', 'Türkçe'],
-      ['en', 'English'],
-    ],
-    settingsState.panel.language,
-    async (v) => {
-      status.set('', t('set.saving'));
-      const res = await api('/api/settings', { language: v });
-      if (res.ok) window.location.reload();
-      else status.set('err', t('set.saveFailed'));
-    },
-  );
+  const select = h('select', { class: 'select', 'aria-label': t('set.language') }, I18N.LANGUAGES.map((l) => h('option', { value: l }, I18N.NAMES[l])));
+  select.value = settingsState.panel.language;
+  select.addEventListener('change', async () => {
+    status.set('', t('set.saving'));
+    const res = await api('/api/settings', { language: select.value });
+    if (res.ok) window.location.reload();
+    else status.set('err', t('set.saveFailed'));
+  });
+  const lang = { el: select };
   return settingsCard('set.general', 'gear', null, h('div', { class: 'form-rows' }, formRow(t('set.language'), [lang.el, status.el], t('set.languageHint'))));
 }
 

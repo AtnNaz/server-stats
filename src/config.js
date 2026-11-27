@@ -60,9 +60,10 @@ function validate(cfg) {
     errors.push('intervalSeconds 1-60 arasında olmalı');
   if (typeof cfg.historyMinutes !== 'number' || cfg.historyMinutes < 1 || cfg.historyMinutes > 1440)
     errors.push('historyMinutes 1-1440 arasında olmalı');
-  if (typeof cfg.auth.username !== 'string' || !cfg.auth.username) errors.push('auth.username boş olamaz');
-  if (!parseHash(cfg.auth.passwordHash))
-    errors.push('auth.passwordHash geçersiz; "node bin/hash-password.js" ile üretin');
+  const setupPending = cfg.auth.passwordHash === '';
+  if (typeof cfg.auth.username !== 'string' || (!cfg.auth.username && !setupPending)) errors.push('auth.username boş olamaz');
+  if (!setupPending && !parseHash(cfg.auth.passwordHash))
+    errors.push('auth.passwordHash geçersiz; "node bin/hash-password.js" ile üretin ya da boş bırakıp panelin ilk kurulum ekranını kullanın');
   if (Boolean(cfg.tls.cert) !== Boolean(cfg.tls.key)) errors.push('tls.cert ve tls.key birlikte verilmeli');
   if (!Array.isArray(cfg.services) || cfg.services.some((s) => typeof s !== 'string' || !UNIT_NAME.test(s)))
     errors.push('services, geçerli systemd birim adlarından oluşan bir liste olmalı (ör. "nginx", "ssh.service")');

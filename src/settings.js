@@ -7,7 +7,7 @@ import { parseHash } from './auth.js';
 // Arayüzden değiştirilen panel ayarları. config.json'daki değerlerin üzerine yazılır ve
 // servis kullanıcısının yazabildiği durum klasöründe (/var/lib/serverhealth-panel) saklanır.
 
-export const LANGUAGES = ['tr', 'en'];
+export const LANGUAGES = ['tr', 'en', 'de', 'es', 'fr', 'ru'];
 export const INTERVALS = [1, 2, 3, 5, 10, 15, 30, 60];
 export const HISTORY_MINUTES = [5, 10, 15, 30, 60, 120];
 // Zamanlanmış hız testi aralığı (saat); 0 kapalı.
@@ -101,6 +101,11 @@ export function createSettingsStore(stateDir) {
       data = { ...data, passwordHash: hash, passwordBase: base };
       await save();
     },
+    async setAccount(username, hash, base) {
+      if (!parseHash(hash)) throw new Error('invalid hash');
+      data = { ...data, username, passwordHash: hash, passwordBase: base };
+      await save();
+    },
   };
 }
 
@@ -114,7 +119,10 @@ export function effectiveConfig(config, settings) {
     services: settings.services ?? config.services,
     speedtestHours: settings.speedtestHours ?? 0,
     thresholds: { ...DEFAULT_THRESHOLDS, ...settings.thresholds },
-    auth: { ...config.auth, ...(settings.passwordHash && settings.passwordBase === config.auth.passwordHash && { passwordHash: settings.passwordHash }) },
+    auth: {
+      ...config.auth,
+      ...(settings.passwordHash && settings.passwordBase === config.auth.passwordHash && { passwordHash: settings.passwordHash, ...(settings.username && { username: settings.username }) }),
+    },
     disks: { ...config.disks, ...(settings.hideDisks && { hide: settings.hideDisks }) },
     network: { ...config.network, ...(settings.hideInterfaces && { hideInterfaces: settings.hideInterfaces }) },
   };
