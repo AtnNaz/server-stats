@@ -84,6 +84,7 @@ export function summarizeSmart(data) {
   };
   const summary = {
     serial: data.serial_number ? String(data.serial_number) : null,
+    model: data.model_name ? String(data.model_name).replace(/\s+/g, ' ') : null,
     counters: smartCounters(data),
     passed,
     temperature: data.temperature?.current ?? nvme?.temperature ?? null,
@@ -148,13 +149,14 @@ export function summarizeSmart(data) {
 
 // Aygıt adları açılışta değişebilir; model tutmuyorsa SMART kaydı bu diske ait sayılmaz.
 // Uykudaki diskte son bilinen sağlık durumu korunur, yalnızca "uykuda" işareti eklenir.
-export function smartFor(entries, name, model) {
+export function smartFor(entries, name, model, size = null) {
   // smartctl NVMe diskleri denetleyici adıyla bildirir: nvme0n1 diskinin kaydı /dev/nvme0'dır.
   const controller = /^(nvme\d+)n\d+$/.exec(name)?.[1];
   const entry = entries.find((d) => d.name === `/dev/${name}`) ?? (controller ? entries.find((d) => d.name === `/dev/${controller}`) : null);
   if (!entry) return null;
   const smartModel = entry.data?.model_name?.replace(/\s+/g, ' ');
-  if (smartModel && model && !smartModel.startsWith(model)) return null;
+  const sameSize = Boolean(size) && entry.data?.user_capacity?.bytes === size;
+  if (smartModel && model && !smartModel.startsWith(model) && !sameSize) return null;
   const summary = entry.data ? summarizeSmart(entry.data) : { status: 'unknown', reasons: [entry.error ?? t('smart.unreadable')] };
   return { ...summary, standby: Boolean(entry.standby) };
 }
@@ -229,7 +231,7 @@ export function createStorageCollector({ sysfs = '/sys', proc = '/proc', smartFi
           writeRate: rate('writeSectors', SECTOR),
           iops: elapsed > 0 && cur && old ? Math.round((cur.readIos + cur.writeIos - old.readIos - old.writeIos) / elapsed) : null,
           busy: elapsed > 0 && cur && old ? Math.min(100, Math.round(((cur.ioMs - old.ioMs) / (elapsed * 1000)) * 1000) / 10) : null,
-          smart: smart.available ? smartFor(smart.devices, name, info.model) : null,
+          smart: smart.available ? smartFor(smart.devices, name, info.model, info.size) : null,
         };
       }),
     );

@@ -91,6 +91,10 @@ test('SMART kaydı yalnızca aynı modeldeki diske eşlenir; uykudaki diskin dur
   assert.equal(sleeping.status, 'crit'); // uyuyor diye "sağlıklı" görünmez
   assert.equal(sleeping.standby, true);
   assert.equal(smartFor(entries, 'sdb', 'X'), null);
+  const usb = [{ name: '/dev/sdd', data: { model_name: 'EXAMPLE-2.5IN-1TB', user_capacity: { bytes: 1000204886016 }, smart_status: { passed: true } } }];
+  assert.equal(smartFor(usb, 'sdd', 'Portable Drive', 1000204886016).status, 'ok');
+  assert.equal(smartFor(usb, 'sdd', 'Portable Drive', 2000398934016), null);
+  assert.equal(smartFor(usb, 'sdd', 'Portable Drive'), null);
   assert.equal(smartFor([{ name: '/dev/sdc', error: 'SMART desteklenmiyor' }], 'sdc', 'USB').status, 'unknown');
 
   // NVMe: smartctl denetleyici adını (/dev/nvme0) bildirir, disk adı nvme0n1'dir.

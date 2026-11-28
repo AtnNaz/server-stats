@@ -1122,7 +1122,7 @@ function physTile(d) {
     h(
       'div',
       { class: 'phys-head' },
-      h('div', { class: 'phys-title' }, h('strong', null, diskLabel(d)), h('span', { title: d.model }, `${d.model} · ${fmtDiskSize(d.size)} · /dev/${d.name}`)),
+      h('div', { class: 'phys-title' }, h('strong', null, diskLabel(d)), h('span', { title: d.model }, `${sm?.model && !sm.model.startsWith(d.model) ? `${d.model} (${sm.model})` : d.model} · ${fmtDiskSize(d.size)} · /dev/${d.name}`)),
       h('div', { class: 'phys-tags' }, h('span', { class: 'tag' }, d.type), sm?.standby ? tag('', 'off', t('disk.standby')) : null, sm?.acknowledged ? tag('', 'ok', t('disk.ack.tag')) : null, tag(cls, iconName, t(labelKey))),
     ),
     d.mounts.length ? h('div', { class: 'mono muted' }, d.mounts.join('  ')) : h('div', { class: 'muted small' }, t('disk.notMounted')),
