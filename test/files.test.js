@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { validateFilesRequest, cleanPath, partName, CHUNK_SIZE } from '../src/files-protocol.js';
+import { validateFilesRequest, cleanPath, partName, CHUNK_SIZE, parseRange, resolveRange, previewType } from '../src/files-protocol.js';
 import { createFiles, readHeader, readExactly, errorCode } from '../bin/serverhealth-files.js';
 import { filesCall, filesRead, contentDisposition } from '../src/files-client.js';
 
@@ -128,6 +128,54 @@ test('panel istemcisi gerçek köprüyle konuşur', async () => {
     await assert.rejects(call({ op: 'list', path: path.join(dir, 'yok') }), { code: 'not_found' });
     await assert.rejects(filesRead({ socketPath: sock, path: dir }), { code: 'is_dir' });
     await assert.rejects(call({ op: 'bogus' }), { code: 'invalid' });
+  } finally {
+    server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('kısmi okuma: Range başlığı, sınırlar ve önizleme türleri', () => {
+  assert.deepEqual(parseRange('bytes=0-99'), { start: 0, end: 99 });
+  assert.deepEqual(parseRange('bytes=500-'), { start: 500 });
+  assert.deepEqual(parseRange('bytes=-200'), { suffix: 200 });
+  assert.equal(parseRange('bytes=0-1,5-9'), null);
+  assert.equal(parseRange('items=0-1'), null);
+  assert.equal(parseRange(undefined), null);
+  assert.deepEqual(resolveRange(null, 1000), { start: 0, end: 999, partial: false });
+  assert.deepEqual(resolveRange({ start: 990, end: 5000 }, 1000), { start: 990, end: 999, partial: true });
+  assert.deepEqual(resolveRange({ suffix: 5000 }, 1000), { start: 0, end: 999, partial: true });
+  assert.equal(resolveRange({ start: 1000 }, 1000), null);
+  assert.deepEqual(validateFilesRequest({ op: 'read', path: '/a/b', range: { start: 5 } }), { op: 'read', path: '/a/b', range: { start: 5 } });
+  assert.equal(validateFilesRequest({ op: 'read', path: '/a/b', range: { start: 9, end: 3 } }), null);
+  assert.equal(validateFilesRequest({ op: 'read', path: '/a/b', range: { suffix: 0 } }), null);
+  assert.equal(previewType('Tatil.JPG'), 'image/jpeg');
+  assert.equal(previewType('film.mkv'), 'video/x-matroska');
+  assert.equal(previewType('sayfa.html'), null);
+  assert.equal(previewType('logo.svg'), null);
+});
+
+test('köprü dosyanın istenen bölümünü gönderir', async () => {
+  const dir = await tmp();
+  const sock = path.join(dir, 'r.sock');
+  const server = net.createServer((c) => {
+    const child = spawn(process.execPath, [BRIDGE], { stdio: ['pipe', 'pipe', 'ignore'], env: { ...process.env, HOME: dir } });
+    c.pipe(child.stdin);
+    child.stdout.pipe(c);
+    c.on('error', () => child.kill());
+  });
+  await new Promise((r) => server.listen(sock, r));
+  try {
+    const file = path.join(dir, 'v.bin');
+    await writeFile(file, Buffer.from([...Array(256).keys()]));
+    const r = await filesRead({ socketPath: sock, path: file, range: { start: 10, end: 19 } });
+    assert.deepEqual([r.info.start, r.info.end, r.info.size, r.info.partial], [10, 19, 256, true]);
+    const chunks = [r.rest];
+    const ended = new Promise((res) => r.socket.on('end', res));
+    r.socket.on('data', (d) => chunks.push(d));
+    r.socket.resume();
+    await ended;
+    assert.deepEqual([...Buffer.concat(chunks)], [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
+    await assert.rejects(filesRead({ socketPath: sock, path: file, range: { start: 999 } }), (err) => err.code === 'range' && err.size === 256);
   } finally {
     server.close();
     await rm(dir, { recursive: true, force: true });

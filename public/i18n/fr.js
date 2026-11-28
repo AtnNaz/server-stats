@@ -1190,4 +1190,13 @@
   'setup.badUsername': 'Le nom d\'utilisateur ne peut contenir que des lettres, chiffres, point, tiret bas et tiret.',
   'setup.shortPassword': 'Le mot de passe doit comporter au moins 8 caractères.',
   'setup.mismatch': 'Les mots de passe ne correspondent pas.',
+  'files.viewMode': 'Affichage',
+  'files.viewList': 'Liste',
+  'files.viewGrid': 'Grille',
+  'files.preview': 'Aperçu',
+  'files.previewFailed': 'Votre navigateur ne peut pas afficher ce fichier. Téléchargez-le et ouvrez-le sur votre ordinateur.',
+  'files.prev': 'Précédent',
+  'files.next': 'Suivant',
+  'files.close': 'Fermer',
+  'files.of': '{n} sur {total}',
 };

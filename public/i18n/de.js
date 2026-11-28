@@ -1190,4 +1190,13 @@
   'setup.badUsername': 'Der Benutzername darf nur Buchstaben, Ziffern, Punkt, Unterstrich und Bindestrich enthalten.',
   'setup.shortPassword': 'Das Passwort muss mindestens 8 Zeichen lang sein.',
   'setup.mismatch': 'Die Passwörter stimmen nicht überein.',
+  'files.viewMode': 'Ansicht',
+  'files.viewList': 'Liste',
+  'files.viewGrid': 'Raster',
+  'files.preview': 'Vorschau',
+  'files.previewFailed': 'Ihr Browser kann diese Datei nicht anzeigen. Laden Sie sie herunter und öffnen Sie sie auf Ihrem Computer.',
+  'files.prev': 'Zurück',
+  'files.next': 'Weiter',
+  'files.close': 'Schließen',
+  'files.of': '{n} von {total}',
 };

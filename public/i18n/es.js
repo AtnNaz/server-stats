@@ -1190,4 +1190,13 @@
   'setup.badUsername': 'El usuario solo puede contener letras, números, punto, guion bajo y guion.',
   'setup.shortPassword': 'La contraseña debe tener al menos 8 caracteres.',
   'setup.mismatch': 'Las contraseñas no coinciden.',
+  'files.viewMode': 'Vista',
+  'files.viewList': 'Lista',
+  'files.viewGrid': 'Cuadrícula',
+  'files.preview': 'Vista previa',
+  'files.previewFailed': 'Tu navegador no puede mostrar este archivo. Descárgalo y ábrelo en tu equipo.',
+  'files.prev': 'Anterior',
+  'files.next': 'Siguiente',
+  'files.close': 'Cerrar',
+  'files.of': '{n} de {total}',
 };

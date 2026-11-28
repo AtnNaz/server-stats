@@ -208,6 +208,7 @@ Sol menüdeki **Dosyalar** sayfası, terminal açıkken kullanılabilir ve termi
 
 - Panel servisi dosyalara kendisi dokunmaz. systemd, `/run/serverhealth-files.sock` soketine gelen her istek için seçilen kullanıcıyla kısa ömürlü bir `serverhealth-files@` servisi başlatır; sokete yalnızca panel servisinin grubu bağlanabilir. Köprü root olarak çalıştırılırsa hiçbir isteği yerine getirmez.
 - Yüklemeler 4 MiB'lık parçalar hâlinde gider ve önce aynı klasördeki gizli bir `.ad.<kimlik>.part` dosyasına yazılır; son parça gelince asıl adına taşınır. Yarıda kalan yükleme bu geçici dosyayı siler. Aynı adda dosya varsa üzerine yazmadan önce sorulur; üzerine yazılan dosyanın izinleri korunur.
+- Resim, video ve ses dosyalarına tıklayınca indirmek yerine tam ekran görüntüleyicide açılır; klasördeki diğer medya dosyalarına oklarla (telefonda kaydırarak) geçilir ve görüntüleyicideki **İndir** düğmesiyle indirilir. Videolarda ileri-geri sarma çalışır (sunucu dosyanın yalnızca istenen bölümünü gönderir). **Izgara** görünümü resimleri küçük önizlemelerle gösterir. Güvenlik için yalnızca resim, video ve ses türleri tarayıcıda açılır; HTML, SVG gibi kod çalıştırabilecek dosyalar her zaman indirilir.
 - Silme kalıcıdır (çöp kutusu yoktur) ve her seferinde onay ister. Klasörler içindekilerle birlikte silinir. Silme ve yeniden adlandırma `journalctl -u 'serverhealth-files@*'` günlüğüne yazılır.
 - Yükleme ve değişiklik istekleri yalnızca tarayıcı oturumuyla ve panelin kendi sayfasından kabul edilir.
 

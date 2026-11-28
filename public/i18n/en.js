@@ -1190,4 +1190,13 @@
   'setup.badUsername': 'The username may contain only letters, digits, dot, underscore and hyphen.',
   'setup.shortPassword': 'The password must be at least 8 characters.',
   'setup.mismatch': 'The passwords do not match.',
+  'files.viewMode': 'View',
+  'files.viewList': 'List',
+  'files.viewGrid': 'Grid',
+  'files.preview': 'Preview',
+  'files.previewFailed': 'Your browser cannot show this file. Download it and open it on your computer.',
+  'files.prev': 'Previous',
+  'files.next': 'Next',
+  'files.close': 'Close',
+  'files.of': '{n} of {total}',
 };

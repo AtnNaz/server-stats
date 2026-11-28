@@ -43,7 +43,7 @@ export function filesCall({ socketPath, request, body = null, timeoutMs = 30_000
   });
 }
 
-export function filesRead({ socketPath, path, timeoutMs = 30_000, connect = (p) => net.createConnection(p) }) {
+export function filesRead({ socketPath, path, range = null, timeoutMs = 30_000, connect = (p) => net.createConnection(p) }) {
   return new Promise((resolve, reject) => {
     const sock = connect(socketPath);
     let buf = Buffer.alloc(0);
@@ -76,11 +76,11 @@ export function filesRead({ socketPath, path, timeoutMs = 30_000, connect = (p) 
       }
       if (head.error) {
         sock.destroy();
-        return done(reject, fail(head.error));
+        return done(reject, Object.assign(fail(head.error), { size: head.size }));
       }
       done(resolve, { info: head, rest: buf.subarray(nl + 1), socket: sock });
     };
-    sock.on('connect', () => sock.write(`${JSON.stringify({ op: 'read', path })}\n`));
+    sock.on('connect', () => sock.write(`${JSON.stringify({ op: 'read', path, ...(range && { range }) })}\n`));
     sock.on('data', onData);
     sock.on('error', (err) => done(reject, fail(err.code === 'too_large' ? 'too_large' : 'unavailable')));
     sock.on('close', () => done(reject, fail('unavailable')));
@@ -92,4 +92,4 @@ export function contentDisposition(name) {
   return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`;
 }
 
-export const FILE_STATUS = { not_found: 404, denied: 403, exists: 409, not_empty: 409, busy: 409, no_space: 507, files_unavailable: 409, unavailable: 502, timeout: 504, root: 409 };
+export const FILE_STATUS = { range: 416, not_found: 404, denied: 403, exists: 409, not_empty: 409, busy: 409, no_space: 507, files_unavailable: 409, unavailable: 502, timeout: 504, root: 409 };

@@ -30,7 +30,7 @@ import { createDiskHealth, HEALTH_RANGES } from './disk-health.js';
 import { markAcknowledged } from './disk-ack.js';
 import { createTraffic } from './traffic.js';
 import { filesCall, filesRead, contentDisposition, FILE_STATUS } from './files-client.js';
-import { validateFilesRequest, CHUNK_SIZE } from './files-protocol.js';
+import { validateFilesRequest, CHUNK_SIZE, parseRange, previewType } from './files-protocol.js';
 import { createImageUpdates, validateDockerRequest } from './docker-protocol.js';
 import { upgrade } from './websocket.js';
 import { createTerminals, terminalAvailable } from './terminal.js';
@@ -84,7 +84,7 @@ const ASSETS = [
 
 const SECURITY_HEADERS = {
   'Content-Security-Policy':
-    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; manifest-src 'self'; connect-src 'self'; frame-src 'self'; " +
+    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self'; manifest-src 'self'; connect-src 'self'; frame-src 'self'; " +
     "base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
@@ -97,7 +97,7 @@ const SECURITY_HEADERS = {
 const ASSET_HEADERS = {
   terminal: {
     'Content-Security-Policy':
-      "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; manifest-src 'self'; connect-src 'self'; " +
+      "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; manifest-src 'self'; connect-src 'self'; " +
       "base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
     'X-Frame-Options': 'SAMEORIGIN',
   },
@@ -702,17 +702,32 @@ async function main() {
     }
   }
 
-  async function handleFilesDownload(req, res) {
+  async function handleFilesDownload(req, res, { inline = false } = {}) {
     if (!(await terminalAvailable(filesSocket()))) return sendJson(req, res, 409, { code: 'files_unavailable' });
     const q = validateFilesRequest({ op: 'read', path: new URL(req.url, 'http://localhost').searchParams.get('path') });
     if (!q) return sendJson(req, res, 400, { code: 'invalid' });
+    const type = inline ? previewType(q.path) : 'application/octet-stream';
+    if (!type) return sendJson(req, res, 415, { code: 'not_previewable' });
+    const range = parseRange(req.headers.range);
     let r;
     try {
-      r = await filesRead({ socketPath: filesSocket(), path: q.path });
+      r = await filesRead({ socketPath: filesSocket(), path: q.path, range });
     } catch (err) {
+      if (err.code === 'range') return send(req, res, 416, TEXT, 'Range Not Satisfiable\n', { 'Content-Range': `bytes */${err.size ?? 0}` });
       return filesError(req, res, err);
     }
-    res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'application/octet-stream', 'Content-Length': r.info.size, 'Content-Disposition': contentDisposition(r.info.name), 'Cache-Control': 'no-store' });
+    const { size, start, end, partial } = r.info;
+    const headers = {
+      ...SECURITY_HEADERS,
+      ...(inline && { 'Content-Security-Policy': "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox" }),
+      'Content-Type': type,
+      'Content-Length': Math.max(0, end - start + 1),
+      'Accept-Ranges': 'bytes',
+      'Content-Disposition': inline ? contentDisposition(r.info.name).replace(/^attachment/, 'inline') : contentDisposition(r.info.name),
+      'Cache-Control': inline ? 'private, max-age=300' : 'no-store',
+      ...(partial && { 'Content-Range': `bytes ${start}-${end}/${size}` }),
+    };
+    res.writeHead(partial ? 206 : 200, headers);
     if (req.method === 'HEAD') {
       r.socket.destroy();
       return res.end();
@@ -941,6 +956,7 @@ async function main() {
     if (pathname === '/api/speedtest') return sendJson(req, res, 200, { ...(await speedtest.status()), scheduleHours: effective.speedtestHours });
     if (pathname === '/api/files') return handleFilesList(req, res);
     if (pathname === '/api/files/download') return handleFilesDownload(req, res);
+    if (pathname === '/api/files/view') return handleFilesDownload(req, res, { inline: true });
     if (pathname === '/api/traffic') {
       const tz = Number(new URL(req.url, 'http://localhost').searchParams.get('tz'));
       return sendJson(req, res, 200, await traffic.query({ offsetMinutes: Number.isInteger(tz) && Math.abs(tz) <= 840 ? tz : 0 }));

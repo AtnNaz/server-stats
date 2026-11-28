@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
-import { partName, validateFilesRequest } from '../src/files-protocol.js';
+import { partName, resolveRange, validateFilesRequest } from '../src/files-protocol.js';
 
 const MAX_HEADER = 16 * 1024;
 const MAX_ENTRIES = 5000;
@@ -186,8 +186,10 @@ async function main() {
   try {
     if (q.op === 'read') {
       const info = await files.openRead(q.path);
-      process.stdout.write(`${JSON.stringify({ ok: true, ...info })}\n`);
-      await pipeline(createReadStream(q.path), process.stdout);
+      const span = resolveRange(q.range, info.size);
+      if (!span) return reply({ error: 'range', size: info.size });
+      process.stdout.write(`${JSON.stringify({ ok: true, ...info, ...span })}\n`);
+      if (span.end >= span.start) await pipeline(createReadStream(q.path, { start: span.start, end: span.end }), process.stdout);
       return process.exit(0);
     }
     if (q.op === 'write') {

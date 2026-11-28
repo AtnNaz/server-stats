@@ -1190,4 +1190,13 @@
   'setup.badUsername': 'Имя пользователя может содержать только буквы, цифры, точку, подчёркивание и дефис.',
   'setup.shortPassword': 'Пароль должен содержать не менее 8 символов.',
   'setup.mismatch': 'Пароли не совпадают.',
+  'files.viewMode': 'Вид',
+  'files.viewList': 'Список',
+  'files.viewGrid': 'Сетка',
+  'files.preview': 'Просмотр',
+  'files.previewFailed': 'Браузер не может показать этот файл. Скачайте его и откройте на компьютере.',
+  'files.prev': 'Назад',
+  'files.next': 'Далее',
+  'files.close': 'Закрыть',
+  'files.of': '{n} из {total}',
 };

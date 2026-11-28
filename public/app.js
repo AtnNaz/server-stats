@@ -119,6 +119,10 @@ const ICONS = {
   home: '<path d="M4 11 12 4l8 7v9h-5.5v-5.5h-5V20H4z"/>',
   refresh: '<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4.5v4h-4"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
+  play: '<path d="M8 5.5v13l11-6.5z"/>',
+  music: '<path d="M9 18.5V6l10-2v12"/><circle cx="6.5" cy="18.5" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/>',
+  chevronLeft: '<path d="m15 5-7 7 7 7"/>',
+  chevronRight: '<path d="m9 5 7 7-7 7"/>',
   disk: '<ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',
 };
 const iconTemplate = document.createElement('template');
@@ -3948,7 +3952,19 @@ async function loadTraffic() {
   if (trafficVisible()) traffic.timer = setTimeout(loadTraffic, 60_000);
 }
 
-const filesState = { path: null, data: null, sort: 'name', desc: false, hidden: false, built: false, el: {}, uploads: [], error: null };
+const filesState = { path: null, data: null, sort: 'name', desc: false, hidden: false, built: false, el: {}, uploads: [], error: null, media: [], view: readPref('serverhealth-files-view') === 'grid' ? 'grid' : 'list' };
+const MEDIA_EXT = {
+  image: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'bmp', 'heic', 'heif'],
+  video: ['mp4', 'm4v', 'mov', 'webm', 'mkv', 'ogv'],
+  audio: ['mp3', 'm4a', 'aac', 'wav', 'ogg', 'oga', 'opus', 'flac'],
+};
+const mediaKind = (name) => {
+  const ext = String(name).toLowerCase().split('.').pop();
+  return Object.keys(MEDIA_EXT).find((k) => MEDIA_EXT[k].includes(ext)) ?? null;
+};
+const viewUrl = (p) => `/api/files/view?path=${encodeURIComponent(p)}`;
+const downloadUrl = (p) => `/api/files/download?path=${encodeURIComponent(p)}`;
+const viewer = { el: null, items: [], index: 0, opener: null };
 const fileDate = new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' });
 const filePath = (dir, name) => (dir === '/' ? `/${name}` : `${dir}/${name}`);
 const parentOf = (p) => (p === '/' ? '/' : p.slice(0, p.lastIndexOf('/')) || '/');
@@ -4003,6 +4019,22 @@ function buildFiles() {
       el.mkdir,
       el.upload,
       h('label', { class: 'check files-hidden' }, el.hidden, h('span', null, t('files.showHidden'))),
+      (() => {
+        const seg = segEl(
+          [
+            ['list', t('files.viewList')],
+            ['grid', t('files.viewGrid')],
+          ],
+          filesState.view,
+          (v) => {
+            filesState.view = v;
+            writePref('serverhealth-files-view', v === 'grid' ? 'grid' : null);
+            renderFiles();
+          },
+        );
+        seg.el.setAttribute('aria-label', t('files.viewMode'));
+        return seg.el;
+      })(),
       el.picker,
     ),
     el.crumbs,
@@ -4110,6 +4142,10 @@ function renderFiles() {
     });
     return h('th', { class: cls, scope: 'col' }, b);
   };
+  filesState.media = entries.filter((e) => (e.type === 'file' || (e.type === 'link' && e.targetType === 'file')) && mediaKind(e.name)).map((e) => ({ path: filePath(d.path, e.name), name: e.name, kind: mediaKind(e.name), size: e.size }));
+  if (filesState.view === 'grid') {
+    return fill(el.body, d.truncated ? h('p', { class: 'muted small' }, t('files.truncated')) : null, entries.length ? h('div', { class: 'files-grid' }, entries.map((e) => fileTile(d, e))) : placeholder(t('files.empty')));
+  }
   const rows = entries.map((e) => fileRow(d, e));
   fill(
     el.body,
@@ -4124,8 +4160,9 @@ function fileRow(d, e) {
   const full = filePath(d.path, e.name);
   const dir = e.type === 'dir' || (e.type === 'link' && e.targetType === 'dir');
   const fileLike = e.type === 'file' || (e.type === 'link' && e.targetType === 'file');
-  const nameEl = dir ? h('a', { href: filesHash(full), class: 'files-name' }, e.name) : fileLike ? h('a', { href: `/api/files/download?path=${encodeURIComponent(full)}`, class: 'files-name', download: e.name }, e.name) : h('span', { class: 'files-name' }, e.name);
-  const kindIcon = icon(e.type === 'link' ? 'link' : dir ? 'folder' : 'file');
+  const kind = fileLike ? mediaKind(e.name) : null;
+  const nameEl = dir ? h('a', { href: filesHash(full), class: 'files-name' }, e.name) : kind ? previewLink(full, e.name, 'files-name') : fileLike ? h('a', { href: downloadUrl(full), class: 'files-name', download: e.name }, e.name) : h('span', { class: 'files-name' }, e.name);
+  const kindIcon = icon(e.type === 'link' ? 'link' : dir ? 'folder' : kind === 'image' ? 'file' : kind === 'video' ? 'play' : kind === 'audio' ? 'music' : 'file');
   kindIcon.classList.add(dir ? 'files-ic-dir' : 'files-ic-file');
   const nameCell = h('div', { class: 'files-name-cell' }, kindIcon, nameEl, e.type === 'link' && e.target ? h('span', { class: 'muted small files-target' }, `→ ${e.target}`) : null);
   const act = (name, label, fn) => {
@@ -4141,6 +4178,123 @@ function fileRow(d, e) {
     d.writable ? act('trash', t('files.delete'), () => deleteEntry(d, e, dir)) : null,
   );
   return h('tr', null, h('td', { class: 'files-name-td' }, nameCell), h('td', { class: 'num' }, e.size == null || dir ? '—' : fmtBytes(e.size)), h('td', { class: 'files-col-date' }, e.mtime ? fileDate.format(new Date(e.mtime)) : '—'), h('td', { class: 'files-col-mode mono' }, e.mode ?? '—'), actions);
+}
+
+function previewLink(full, name, cls, ...children) {
+  const a = h('a', { href: viewUrl(full), class: cls }, ...(children.length ? children : [name]));
+  a.addEventListener('click', (ev) => {
+    if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.button !== 0) return;
+    ev.preventDefault();
+    openViewer(full, a);
+  });
+  return a;
+}
+
+function fileTile(d, e) {
+  const full = filePath(d.path, e.name);
+  const dir = e.type === 'dir' || (e.type === 'link' && e.targetType === 'dir');
+  const fileLike = e.type === 'file' || (e.type === 'link' && e.targetType === 'file');
+  const kind = fileLike ? mediaKind(e.name) : null;
+  const thumb =
+    kind === 'image'
+      ? h('img', { src: viewUrl(full), loading: 'lazy', decoding: 'async', alt: '' })
+      : h('span', { class: `files-thumb-icon${dir ? ' dir' : ''}` }, icon(dir ? 'folder' : kind === 'video' ? 'play' : kind === 'audio' ? 'music' : e.type === 'link' ? 'link' : 'file'));
+  if (kind === 'image') thumb.addEventListener('error', () => thumb.replaceWith(h('span', { class: 'files-thumb-icon' }, icon('file'))));
+  const body = [h('span', { class: 'files-thumb' }, thumb), h('span', { class: 'files-tile-name', title: e.name }, e.name), h('span', { class: 'files-tile-meta' }, dir ? '' : e.size == null ? '—' : fmtBytes(e.size))];
+  if (dir) return h('a', { class: 'files-tile', href: filesHash(full) }, body);
+  if (kind) return previewLink(full, e.name, 'files-tile', ...body);
+  if (fileLike) return h('a', { class: 'files-tile', href: downloadUrl(full), download: e.name }, body);
+  return h('span', { class: 'files-tile' }, body);
+}
+
+function buildViewer() {
+  if (viewer.el) return;
+  const close = h('button', { type: 'button', class: 'viewer-btn', 'aria-label': t('files.close'), title: t('files.close') }, '×');
+  const prev = h('button', { type: 'button', class: 'viewer-nav prev', 'aria-label': t('files.prev'), title: t('files.prev') }, icon('chevronLeft'));
+  const next = h('button', { type: 'button', class: 'viewer-nav next', 'aria-label': t('files.next'), title: t('files.next') }, icon('chevronRight'));
+  const title = h('span', { class: 'viewer-title ellipsis' });
+  const counter = h('span', { class: 'viewer-count' });
+  const download = h('a', { class: 'viewer-btn viewer-download', title: t('files.download'), 'aria-label': t('files.download') }, icon('download'), h('span', null, t('files.download')));
+  const stage = h('div', { class: 'viewer-stage' });
+  const el = h('div', { class: 'viewer', role: 'dialog', 'aria-modal': 'true', 'aria-label': t('files.preview'), hidden: true, tabindex: '-1' }, h('div', { class: 'viewer-bar' }, title, counter, download, close), stage, prev, next);
+  close.addEventListener('click', closeViewer);
+  prev.addEventListener('click', () => stepViewer(-1));
+  next.addEventListener('click', () => stepViewer(1));
+  stage.addEventListener('click', (ev) => {
+    if (ev.target === stage) closeViewer();
+  });
+  let startX = null;
+  stage.addEventListener('pointerdown', (ev) => (startX = ev.clientX));
+  stage.addEventListener('pointerup', (ev) => {
+    if (startX === null || ev.pointerType === 'mouse') return;
+    const dx = ev.clientX - startX;
+    startX = null;
+    if (Math.abs(dx) > 60) stepViewer(dx < 0 ? 1 : -1);
+  });
+  document.addEventListener('keydown', (ev) => {
+    if (el.hidden) return;
+    if (ev.key === 'Escape') closeViewer();
+    else if (ev.key === 'ArrowLeft' && !(ev.target instanceof HTMLMediaElement)) stepViewer(-1);
+    else if (ev.key === 'ArrowRight' && !(ev.target instanceof HTMLMediaElement)) stepViewer(1);
+  });
+  Object.assign(viewer, { el, stage, title, counter, download, prev, next });
+  document.body.append(el);
+}
+
+function openViewer(full, opener) {
+  buildViewer();
+  viewer.items = filesState.media;
+  viewer.index = Math.max(0, viewer.items.findIndex((m) => m.path === full));
+  viewer.opener = opener ?? null;
+  viewer.el.hidden = false;
+  document.body.classList.add('viewer-open');
+  showViewerItem();
+  viewer.el.focus();
+}
+
+function stepViewer(dir) {
+  const n = viewer.items.length;
+  if (n < 2) return;
+  viewer.index = (viewer.index + dir + n) % n;
+  showViewerItem();
+}
+
+function stopViewerMedia() {
+  for (const m of viewer.stage.querySelectorAll('video, audio')) {
+    m.pause();
+    m.removeAttribute('src');
+    m.load();
+  }
+}
+
+function showViewerItem() {
+  const item = viewer.items[viewer.index];
+  if (!item) return closeViewer();
+  stopViewerMedia();
+  viewer.title.textContent = item.name;
+  viewer.counter.textContent = viewer.items.length > 1 ? t('files.of', { n: viewer.index + 1, total: viewer.items.length }) : '';
+  viewer.download.href = downloadUrl(item.path);
+  viewer.download.setAttribute('download', item.name);
+  viewer.prev.hidden = viewer.next.hidden = viewer.items.length < 2;
+  const failed = () =>
+    fill(viewer.stage, h('div', { class: 'viewer-failed' }, icon(item.kind === 'image' ? 'file' : item.kind === 'video' ? 'play' : 'music'), h('p', null, t('files.previewFailed')), h('a', { class: 'btn btn-accent', href: downloadUrl(item.path), download: item.name }, t('files.download'))));
+  let media;
+  if (item.kind === 'image') media = h('img', { src: viewUrl(item.path), alt: item.name, class: 'viewer-media' });
+  else if (item.kind === 'video') media = h('video', { src: viewUrl(item.path), class: 'viewer-media', controls: true, autoplay: true, playsinline: true, preload: 'metadata' });
+  else media = h('div', { class: 'viewer-audio' }, icon('music'), h('audio', { src: viewUrl(item.path), controls: true, autoplay: true, preload: 'metadata' }));
+  (media.tagName === 'DIV' ? media.querySelector('audio') : media).addEventListener('error', failed);
+  fill(viewer.stage, media);
+  const nextItem = viewer.items[(viewer.index + 1) % viewer.items.length];
+  if (nextItem?.kind === 'image' && viewer.items.length > 1) new Image().src = viewUrl(nextItem.path);
+}
+
+function closeViewer() {
+  if (!viewer.el || viewer.el.hidden) return;
+  stopViewerMedia();
+  fill(viewer.stage);
+  viewer.el.hidden = true;
+  document.body.classList.remove('viewer-open');
+  viewer.opener?.focus?.();
 }
 
 function inlineName(value, onSubmit) {
@@ -5748,6 +5902,7 @@ function applyRoute() {
   else leaveLogs();
   if (route === 'guvenlik') enterSecurity();
   if (route === 'dosyalar') enterFiles();
+  else closeViewer();
   if (route === 'yedekler') enterBackups();
   else leaveBackups();
   if (route === 'izleme') enterUptime();

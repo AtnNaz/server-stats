@@ -27,7 +27,13 @@ export function validateFilesRequest(q) {
   }
   if (q.op === 'read') {
     const p = nonRoot(cleanPath(q.path));
-    return p ? { op: 'read', path: p } : null;
+    if (!p) return null;
+    if (q.range === undefined || q.range === null) return { op: 'read', path: p };
+    const r = q.range;
+    if (!r || typeof r !== 'object') return null;
+    if (r.suffix !== undefined) return isInt(r.suffix, MAX_FILE) && r.suffix > 0 && r.start === undefined && r.end === undefined ? { op: 'read', path: p, range: { suffix: r.suffix } } : null;
+    if (!isInt(r.start, MAX_FILE) || (r.end !== undefined && (!isInt(r.end, MAX_FILE) || r.end < r.start))) return null;
+    return { op: 'read', path: p, range: r.end === undefined ? { start: r.start } : { start: r.start, end: r.end } };
   }
   if (q.op === 'write' || q.op === 'abort') {
     const p = nonRoot(cleanPath(q.path));
@@ -55,3 +61,45 @@ export function validateFilesRequest(q) {
 }
 
 export const partName = (target, upload) => path.posix.join(path.posix.dirname(target), `.${path.posix.basename(target).slice(0, 200)}.${upload}.part`);
+
+export function parseRange(header) {
+  const m = /^bytes=(\d*)-(\d*)$/.exec(String(header ?? '').trim());
+  if (!m || (!m[1] && !m[2])) return null;
+  if (!m[1]) return { suffix: Number(m[2]) };
+  return m[2] ? { start: Number(m[1]), end: Number(m[2]) } : { start: Number(m[1]) };
+}
+
+export function resolveRange(range, size) {
+  if (!range) return { start: 0, end: size - 1, partial: false };
+  if (range.suffix !== undefined) return size > 0 ? { start: Math.max(0, size - range.suffix), end: size - 1, partial: true } : null;
+  if (range.start >= size) return null;
+  return { start: range.start, end: Math.min(range.end ?? size - 1, size - 1), partial: true };
+}
+
+export const PREVIEW_TYPES = {
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  avif: 'image/avif',
+  bmp: 'image/bmp',
+  heic: 'image/heic',
+  heif: 'image/heif',
+  mp4: 'video/mp4',
+  m4v: 'video/mp4',
+  mov: 'video/quicktime',
+  webm: 'video/webm',
+  mkv: 'video/x-matroska',
+  ogv: 'video/ogg',
+  mp3: 'audio/mpeg',
+  m4a: 'audio/mp4',
+  aac: 'audio/aac',
+  wav: 'audio/wav',
+  ogg: 'audio/ogg',
+  oga: 'audio/ogg',
+  opus: 'audio/ogg',
+  flac: 'audio/flac',
+};
+
+export const previewType = (name) => PREVIEW_TYPES[String(name).toLowerCase().split('.').pop()] ?? null;

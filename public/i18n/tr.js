@@ -1190,4 +1190,13 @@
   'setup.badUsername': 'Kullanıcı adı yalnızca harf, rakam, nokta, alt çizgi ve tire içerebilir.',
   'setup.shortPassword': 'Şifre en az 8 karakter olmalı.',
   'setup.mismatch': 'Şifreler aynı değil.',
+  'files.viewMode': 'Görünüm',
+  'files.viewList': 'Liste',
+  'files.viewGrid': 'Izgara',
+  'files.preview': 'Önizleme',
+  'files.previewFailed': 'Tarayıcı bu dosyayı gösteremiyor. İndirip bilgisayarınızda açabilirsiniz.',
+  'files.prev': 'Önceki',
+  'files.next': 'Sonraki',
+  'files.close': 'Kapat',
+  'files.of': '{n} / {total}',
 };
